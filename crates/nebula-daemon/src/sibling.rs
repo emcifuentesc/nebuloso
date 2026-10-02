@@ -12,10 +12,10 @@
 use std::sync::Arc;
 
 use anyhow::{anyhow, bail, Context, Result};
-use nebula_core::orchestration::{Orchestration, Role, DEFAULT_ROSTER};
+use nebula_core::orchestration::{GoalEvent, Orchestration, Role, DEFAULT_ROSTER};
 use nebula_core::{
-    Agent, AgentId, AgentKind, AgentStatus, ChildSpawn, ChildStatus, EntityId, SessionRef,
-    SpawnWorktree, WorkerResult, Worktree, WorktreeId,
+    Agent, AgentId, AgentKind, AgentStatus, ChildSpawn, ChildStatus, EntityId, GoalUpdate,
+    SessionRef, SpawnWorktree, WorkerResult, Worktree, WorktreeId,
 };
 
 use crate::git;
@@ -250,6 +250,7 @@ impl Daemon {
             unattended: role.is_some_and(|(_, entry)| entry.unattended),
             purpose: child.map(ChildSpawn::purpose),
             orchestrator: false,
+            goal: None,
         })
     }
 
@@ -490,6 +491,30 @@ impl Daemon {
         self.archive_agent(child)
     }
 
+    /// `nebula goal …` or the TUI's Clear goal: `id`'s GOAL moved by
+    /// `update`, its verdict text kept beside it.
+    pub fn update_goal(&self, id: &AgentId, update: GoalUpdate) -> Result<()> {
+        let verdict = |text: &str, what| {
+            crate::orchestration::goal_text(
+                text,
+                what,
+                nebula_core::orchestration::MAX_EVIDENCE_LEN,
+            )
+        };
+        let (event, text) = match update {
+            GoalUpdate::Done { evidence } => {
+                (GoalEvent::Done, Some(verdict(&evidence, "evidence")?))
+            }
+            GoalUpdate::Unachievable { why } => {
+                (GoalEvent::Unachievable, Some(verdict(&why, "why")?))
+            }
+            GoalUpdate::Clear => (GoalEvent::Clear, None),
+        };
+        self.store.apply_goal_event(id, event, text.as_deref())?;
+        self.try_broadcast_agent(id);
+        Ok(())
+    }
+
     /// `nebula report`, run by a worker: `text`, cut to
     /// [`MAX_REPORT_BYTES`], as its report over any earlier one, and
     /// `pr_url` as its PR.
@@ -662,6 +687,7 @@ mod tests {
             unattended: false,
             purpose: None,
             orchestrator: false,
+            goal: None,
         }
     }
 
@@ -1151,6 +1177,94 @@ mod tests {
         assert_eq!(
             daemon.store.agent_report(&AgentId("lead".into())).unwrap(),
             (None, 0, 0)
+        );
+    }
+
+    #[test]
+    fn goal_verdicts_need_an_open_goal_and_a_clear_settles_any() {
+        use nebula_core::orchestration::{Goal, GoalState};
+        let daemon = daemon();
+        let plain = lead(&daemon);
+        let done = |id: &AgentId, evidence: &str| {
+            daemon.update_goal(
+                id,
+                GoalUpdate::Done {
+                    evidence: evidence.into(),
+                },
+            )
+        };
+        let why = |id: &AgentId| {
+            daemon.update_goal(
+                id,
+                GoalUpdate::Unachievable {
+                    why: "no CI".into(),
+                },
+            )
+        };
+        for err in [
+            done(&plain, "green").unwrap_err(),
+            why(&plain).unwrap_err(),
+            daemon.update_goal(&plain, GoalUpdate::Clear).unwrap_err(),
+        ] {
+            assert_eq!(
+                err.to_string(),
+                "no open goal",
+                "no goal: not an orchestrator"
+            );
+        }
+        let brain = AgentId("brain".into());
+        daemon
+            .store
+            .insert_agent(&Agent {
+                orchestrator: true,
+                goal: Some(Box::new(Goal {
+                    condition: "tests pass".into(),
+                    state: GoalState::Open,
+                    iterations: 1,
+                    max_iterations: 10,
+                    evidence: None,
+                })),
+                ..agent("brain", "root", AgentKind::Claude, None)
+            })
+            .unwrap();
+        let goal = || {
+            daemon
+                .store
+                .get_agent(&brain)
+                .unwrap()
+                .unwrap()
+                .goal
+                .unwrap()
+        };
+        assert_eq!(
+            done(&brain, &"x".repeat(8 * 1024 + 1))
+                .unwrap_err()
+                .to_string(),
+            "evidence is too long (max 8 KiB)"
+        );
+        assert_eq!(
+            done(&brain, " ").unwrap_err().to_string(),
+            "evidence is empty"
+        );
+        assert_eq!(
+            goal().state,
+            GoalState::Open,
+            "a refused verdict moves nothing"
+        );
+        done(&brain, " cargo test: 412 passed ").unwrap();
+        assert_eq!(
+            (goal().state, goal().evidence.as_deref()),
+            (GoalState::Done, Some("cargo test: 412 passed"))
+        );
+        assert_eq!(why(&brain).unwrap_err().to_string(), "no open goal");
+        assert_eq!(
+            done(&brain, "again").unwrap_err().to_string(),
+            "no open goal"
+        );
+        daemon.update_goal(&brain, GoalUpdate::Clear).unwrap();
+        assert_eq!(
+            (goal().state, goal().evidence.as_deref()),
+            (GoalState::Cleared, Some("cargo test: 412 passed"))
         );
     }
 

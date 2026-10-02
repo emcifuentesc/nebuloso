@@ -127,6 +127,11 @@ pub fn run_report(text: String, pr_url: Option<String>) -> Result<()> {
     runtime()?.block_on(ipc::report(text, pr_url))
 }
 
+/// `nebula goal …` — move a GOAL (see `ipc::update_goal`).
+pub fn run_goal(id: Option<String>, update: nebula_core::GoalUpdate) -> Result<()> {
+    runtime()?.block_on(ipc::update_goal(id.map(nebula_core::AgentId), update))
+}
+
 /// `nebula result <id>` — one worker's report and checkout as JSON (see
 /// `ipc::print_child_result`).
 pub fn run_result(child: String) -> Result<()> {

@@ -248,6 +248,8 @@ pub enum MenuAction {
     UnarchiveAgent(AgentId),
     DeleteAgent(AgentId),
     NewAgent(WorktreeId),
+    /// "Clear goal": drop an ORCHESTRATOR's open GOAL.
+    ClearGoal(AgentId),
     /// "New orchestrator…": the ORCHESTRATOR picker for this checkout.
     NewOrchestrator(WorktreeId),
     /// Orchestrator picker result: launch an ORCHESTRATOR on this harness
@@ -764,6 +766,13 @@ pub enum PromptKind {
         /// panels, where the box closes onto them. Boxed: the view is
         /// several times the size of the other variants.
         back: Option<Box<crate::pr_modal::PullRequestsView>>,
+    },
+    /// The optional GOAL for an ORCHESTRATOR picked on this harness: Enter
+    /// launches it, with the typed condition or, sent empty, with none.
+    OrchestratorGoal {
+        worktree: WorktreeId,
+        kind: AgentKind,
+        custom: Option<String>,
     },
     RenameAgent {
         id: AgentId,
@@ -1982,6 +1991,8 @@ pub struct AgentLaunchDraft {
     pub follow: bool,
     /// Launch an ORCHESTRATOR (`ClientRequest::CreateAgent::orchestrator`).
     pub orchestrator: bool,
+    /// The orchestrator's GOAL (`ClientRequest::CreateAgent::goal`).
+    pub goal: Option<String>,
 }
 
 impl AgentLaunchDraft {
@@ -2015,6 +2026,7 @@ impl AgentLaunchDraft {
             placeholder: None,
             follow: true,
             orchestrator: false,
+            goal: None,
         }
     }
 }
@@ -5627,6 +5639,7 @@ mod tests {
                 unattended: false,
                 purpose: None,
                 orchestrator: false,
+                goal: None,
             })
             .collect();
         app
@@ -5922,6 +5935,7 @@ mod tests {
             unattended: false,
             purpose: None,
             orchestrator: false,
+            goal: None,
         });
         app.tree.agents.push(Agent {
             id: AgentId("a2".into()),
@@ -6161,6 +6175,7 @@ mod tests {
                 unattended: false,
                 purpose: None,
                 orchestrator: false,
+                goal: None,
             });
         }
 

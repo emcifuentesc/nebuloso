@@ -282,6 +282,9 @@ pub struct Agent {
     /// project's roster on the system prompt. Never a worker.
     #[serde(default)]
     pub orchestrator: bool,
+    /// An orchestrator's GOAL, kept after it settles so the row can say how.
+    #[serde(default)]
+    pub goal: Option<Box<crate::orchestration::Goal>>,
 }
 
 impl Agent {

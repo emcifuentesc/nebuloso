@@ -105,6 +105,8 @@ pub(crate) struct CreateAgentSpec {
     pub purpose: Option<nebula_core::orchestration::Role>,
     /// Launch an ORCHESTRATOR (see [`crate::orchestration`]).
     pub orchestrator: bool,
+    /// The orchestrator's GOAL condition.
+    pub goal: Option<String>,
 }
 
 /// A pre-spawned agent CLI waiting to be adopted by the next CreateAgent for
@@ -1059,6 +1061,7 @@ impl Daemon {
             unattended,
             purpose,
             orchestrator,
+            goal,
         } = spec;
         let cloud_prompt = match cloud_prompt {
             Some(_) if kind != AgentKind::Claude => {
@@ -1108,6 +1111,15 @@ impl Daemon {
                 bail!("an orchestrator cannot run in Claude Cloud");
             }
         }
+        let goal = match goal {
+            Some(_) if !orchestrator => bail!("a goal needs an orchestrator"),
+            Some(text) => Some(crate::orchestration::goal_text(
+                &text,
+                "goal",
+                nebula_core::orchestration::MAX_GOAL_LEN,
+            )?),
+            None => None,
+        };
         // A launch that hands the CLI a first prompt is working from the
         // moment it spawns, so the row says so now instead of staying gray
         // until the CLI has booted and its first hook has landed — seconds
@@ -1122,11 +1134,20 @@ impl Daemon {
             .store
             .get_worktree(&worktree_id)?
             .context("worktree not found")?;
-        if orchestrator {
+        let goal = if orchestrator {
             // Refuses settings that cannot be used before the row exists,
             // and leaves the PATH probes its spawn reads cached.
-            self.orchestration_for(&worktree_id).await?;
-        }
+            let settings = self.orchestration_for(&worktree_id).await?;
+            goal.map(|condition| nebula_core::orchestration::Goal {
+                condition,
+                state: nebula_core::orchestration::GoalState::Open,
+                iterations: 0,
+                max_iterations: settings.goal.max_iterations as u32,
+                evidence: None,
+            })
+        } else {
+            None
+        };
         // A warm session for this (worktree, kind) hands over its PTY and
         // its pre-generated id — the CLI booted while the user typed the
         // name, so the create feels instant. A starting prompt rides the
@@ -1185,6 +1206,7 @@ impl Daemon {
             unattended,
             purpose,
             orchestrator,
+            goal: goal.map(Box::new),
         };
         self.store.insert_agent_with_launch_context(
             &agent,
@@ -1361,6 +1383,7 @@ impl Daemon {
             unattended: false,
             purpose: None,
             orchestrator: false,
+            goal: None,
         };
         self.spawn_agent_session(&agent, &worktree, DEFAULT_COLS, DEFAULT_ROWS)?;
         tracing::info!(agent = %agent.id, kind = kind.as_str(), worktree = %worktree.branch, "prewarmed agent session");
@@ -2562,8 +2585,13 @@ impl Daemon {
         });
         let rule = crate::pr_scope::combined_rule(scope.as_ref(), issue_scope.as_ref());
         let guidance = if agent.orchestrator {
+            let goal = agent
+                .goal
+                .as_ref()
+                .filter(|g| g.state == nebula_core::orchestration::GoalState::Open);
             Some(crate::orchestration::orchestrator_guidance(
                 &self.known_orchestration(&worktree.id)?,
+                goal.map(|g| g.condition.as_str()),
             ))
         } else {
             agent.parent_agent_id.is_some().then(|| {
@@ -4139,6 +4167,7 @@ mod tests {
     fn an_orchestrators_guidance_and_roster_ride_the_system_flag() {
         let guidance = crate::orchestration::orchestrator_guidance(
             &nebula_core::orchestration::Orchestration::default(),
+            None,
         );
         for kind in [AgentKind::Claude, AgentKind::Pi] {
             let mut plain = guided("--append-system-prompt", &[]);
@@ -4149,7 +4178,7 @@ mod tests {
             assert_eq!(brain[1], format!("{}\n\n{guidance}", plain[1]), "{kind:?}");
             assert!(brain[1].contains(crate::orchestration::ORCHESTRATOR_GUIDANCE));
             assert!(brain[1].contains(
-                "Roster:\n{\"roster\":{},\"max_children\":8,\"cross_review\":{\"max_rounds\":3}}"
+                "Roster:\n{\"roster\":{},\"max_children\":8,\"cross_review\":{\"max_rounds\":3},\"goal\":{\"max_iterations\":10}}"
             ));
             assert_eq!(brain.last().unwrap(), "fix the parser");
         }
@@ -5170,6 +5199,7 @@ mod tests {
                 unattended: false,
                 purpose: None,
                 orchestrator: false,
+                goal: None,
             })
             .await
             .unwrap_err();
@@ -5193,6 +5223,7 @@ mod tests {
                 unattended: false,
                 purpose: None,
                 orchestrator: false,
+                goal: None,
             })
             .await
             .unwrap_err();
@@ -5216,6 +5247,7 @@ mod tests {
                 unattended: false,
                 purpose: None,
                 orchestrator: false,
+                goal: None,
             })
             .await
             .unwrap_err();
@@ -5239,6 +5271,7 @@ mod tests {
                 unattended: false,
                 purpose: None,
                 orchestrator: false,
+                goal: None,
             })
             .await
             .unwrap_err();
@@ -5265,6 +5298,7 @@ mod tests {
             unattended: false,
             purpose: None,
             orchestrator: true,
+            goal: None,
         };
         for kind in [AgentKind::Codex, AgentKind::Cursor, AgentKind::OpenCode] {
             let err = daemon.create_agent(spec(kind)).await.unwrap_err();
@@ -5287,6 +5321,28 @@ mod tests {
         };
         let err = daemon.create_agent(worker).await.unwrap_err();
         assert_eq!(err.to_string(), "an orchestrator cannot be a worker");
+        let goal = |orchestrator: bool, text: String| CreateAgentSpec {
+            orchestrator,
+            goal: Some(text),
+            ..spec(AgentKind::Claude)
+        };
+        let refusals = [
+            (
+                goal(false, "tests pass".into()),
+                "a goal needs an orchestrator",
+            ),
+            (goal(true, " \n".into()), "goal is empty"),
+            (goal(true, "x".repeat(2049)), "goal is too long (max 2 KiB)"),
+        ];
+        for (spec, why) in refusals {
+            let err = daemon.create_agent(spec).await.unwrap_err();
+            assert_eq!(err.to_string(), why);
+        }
+        let err = daemon
+            .create_agent(goal(true, "x".repeat(2048)))
+            .await
+            .unwrap_err();
+        assert_eq!(err.to_string(), "worktree not found", "2 KiB fits");
     }
 
     #[tokio::test]
@@ -5309,6 +5365,7 @@ mod tests {
             unattended: false,
             purpose: None,
             orchestrator: false,
+            goal: None,
         };
         for kind in AgentKind::ALL {
             if kind == AgentKind::Custom {
@@ -5478,6 +5535,7 @@ mod tests {
             unattended: false,
             purpose: None,
             orchestrator: false,
+            goal: None,
         };
         for kind in AgentKind::ALL {
             if kind == AgentKind::Custom {
@@ -5527,6 +5585,7 @@ mod tests {
             unattended: false,
             purpose: None,
             orchestrator: false,
+            goal: None,
         };
         // Validation runs before the worktree lookup, so an unknown
         // worktree is fine here and every failure is the prompt's own.
@@ -5640,6 +5699,7 @@ mod tests {
             unattended: false,
             purpose: None,
             orchestrator: false,
+            goal: None,
         };
 
         let created = |mut events: broadcast::Receiver<ServerEvent>| {
@@ -5777,6 +5837,7 @@ mod tests {
                 unattended: false,
                 purpose: None,
                 orchestrator: false,
+                goal: None,
             })
             .unwrap();
     }
@@ -5915,6 +5976,7 @@ mod tests {
                 unattended: false,
                 purpose: None,
                 orchestrator: false,
+                goal: None,
             })
             .await
             .unwrap()
@@ -6067,6 +6129,7 @@ mod tests {
                     unattended: false,
                     purpose: None,
                     orchestrator: false,
+                    goal: None,
                 },
                 true,
             )

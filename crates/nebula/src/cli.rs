@@ -287,12 +287,20 @@ pub(crate) enum Command {
         #[arg(required = true, num_args = 1..)]
         text: Vec<String>,
     },
+    /// Settle this orchestrator's goal, or clear one.
+    ///
+    /// Run `done` or `unachievable` from inside an orchestrator with an open
+    /// goal; while it is open, each Claude turn that ends without one is sent
+    /// back to work. Prints nothing; refused ("no open goal") otherwise.
+    #[command(subcommand, after_help = GOAL_EXAMPLES)]
+    Goal(GoalCommand),
     /// Print the roster this session's workers can be started from, as JSON.
     ///
     /// Run from inside a nebula agent session. Prints one JSON object,
     /// {"roster":{"<key>":{"kind","model","effort","roles","unattended"},…},
-    /// "max_children":N,"cross_review":{"max_rounds":N}}, resolved for this session's project from the
-    /// `orchestration` setting, entries in the order the settings list them.
+    /// "max_children":N,"cross_review":{"max_rounds":N},
+    /// "goal":{"max_iterations":N}}, resolved for this session's project from
+    /// the `orchestration` setting, entries in the order the settings list them.
     /// Without a configured roster it lists every installed hooked harness.
     /// A setting that cannot be used is refused with the entry it names.
     #[command(after_help = ROSTER_EXAMPLES)]
@@ -541,6 +549,33 @@ Examples:
 const RESULT_EXAMPLES: &str = "\
 Examples:
   nebula wait 01JB7Y3K2Q && nebula result 01JB7Y3K2Q";
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum GoalCommand {
+    /// The goal holds: stop sending this session back to work.
+    Done {
+        /// What shows it holds, up to 8 KiB; multiple words need no quotes.
+        #[arg(required = true, num_args = 1..)]
+        evidence: Vec<String>,
+    },
+    /// The goal cannot be met: stop sending this session back to work.
+    Unachievable {
+        /// Why, up to 8 KiB; multiple words need no quotes.
+        #[arg(required = true, num_args = 1..)]
+        why: Vec<String>,
+    },
+    /// Drop the goal of session ID, or of this session.
+    Clear {
+        #[arg(value_name = "ID")]
+        id: Option<String>,
+    },
+}
+
+const GOAL_EXAMPLES: &str = "\
+Examples:
+  nebula goal done cargo test passes, PR https://github.com/o/r/pull/7
+  nebula goal unachievable the CI runner is down
+  nebula goal clear 01JB7Y3K2Q";
 
 const ARCHIVE_EXAMPLES: &str = "\
 Examples:

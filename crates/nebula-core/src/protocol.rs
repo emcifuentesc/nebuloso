@@ -8,7 +8,16 @@ use std::path::PathBuf;
 
 /// Bump on any breaking change to these enums. The daemon refuses mismatched
 /// clients; the client then offers a kill-and-restart of the old daemon.
-pub const PROTOCOL_VERSION: u32 = 51;
+pub const PROTOCOL_VERSION: u32 = 52;
+
+/// What `UpdateGoal` does to a GOAL, with the orchestrator's text for its
+/// verdicts.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum GoalUpdate {
+    Done { evidence: String },
+    Unachievable { why: String },
+    Clear,
+}
 
 /// Max IPC frame size (length prefix sanity bound).
 pub const MAX_FRAME_LEN: u32 = 4 * 1024 * 1024;
@@ -133,6 +142,10 @@ pub enum ClientRequest {
         /// harness without a system-prompt flag.
         #[serde(default)]
         orchestrator: bool,
+        /// An orchestrator's GOAL: the condition its Claude Stops are sent
+        /// back to work until. Refused without `orchestrator`.
+        #[serde(default)]
+        goal: Option<String>,
     },
     /// Create a local AGENT of any kind from an OPEN PRS row — a PR
     /// SESSION. It never runs in the ROOT WORKTREE: the daemon finds the
@@ -278,6 +291,14 @@ pub enum ClientRequest {
         req_id: u64,
         id: AgentId,
         child: AgentId,
+    },
+    /// `nebula goal …` and the TUI's Clear goal: move agent `id`'s GOAL.
+    /// Done and unachievable are refused, "no open goal", unless it is
+    /// open. Answered with `Ack`.
+    UpdateGoal {
+        req_id: u64,
+        id: AgentId,
+        update: GoalUpdate,
     },
     /// `nebula report [--pr <url>] <text>`, run by a worker: `text` as its
     /// report to its orchestrator, over any earlier one, and `pr_url` as

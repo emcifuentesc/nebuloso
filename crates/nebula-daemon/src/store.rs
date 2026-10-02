@@ -5,12 +5,12 @@
 use crate::session_title::TitleState;
 use anyhow::{Context, Result};
 use nebula_core::clock::now_ms;
-use nebula_core::orchestration::Role;
+use nebula_core::orchestration::{Goal, GoalEvent, GoalState, Role, StopVerdict, NO_OPEN_GOAL};
 use nebula_core::{
     Agent, AgentId, AgentKind, AgentStatus, Link, LinkId, PrSeen, Project, ProjectId, PromptEntry,
     TerminalId, TerminalTab, Worktree, WorktreeId, RECENT_PROMPTS_KEPT,
 };
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
@@ -361,6 +361,16 @@ const MIGRATIONS: &[&str] = &[
     ALTER TABLE agents ADD COLUMN orchestrator INTEGER NOT NULL DEFAULT 0;
     UPDATE agents SET purpose = 'implement' WHERE parent_agent_id IS NOT NULL;
     ",
+    // 33: an orchestrator's GOAL: its condition, state, the Stops sent back
+    // to work so far and the limit set with it, and the text its `nebula
+    // goal done` / `unachievable` gave. A row with no goal has NULL goal.
+    "
+    ALTER TABLE agents ADD COLUMN goal TEXT;
+    ALTER TABLE agents ADD COLUMN goal_state TEXT;
+    ALTER TABLE agents ADD COLUMN goal_iterations INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE agents ADD COLUMN goal_max_iterations INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE agents ADD COLUMN goal_evidence TEXT;
+    ",
 ];
 
 pub struct Store {
@@ -539,8 +549,8 @@ impl Store {
         issue_url: Option<&str>,
     ) -> Result<()> {
         self.conn.lock().unwrap().execute(
-            "INSERT INTO agents (id, worktree_id, name, status, archived, archived_at, kind, claude_session_id, sort_order, created_at, status_changed_at, model, effort, auto_title_pending, unseen, cloud_session_id, pr_url, issue_url, custom_harness, parent_agent_id, role, unattended, purpose, orchestrator)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24)",
+            "INSERT INTO agents (id, worktree_id, name, status, archived, archived_at, kind, claude_session_id, sort_order, created_at, status_changed_at, model, effort, auto_title_pending, unseen, cloud_session_id, pr_url, issue_url, custom_harness, parent_agent_id, role, unattended, purpose, orchestrator, goal, goal_state, goal_iterations, goal_max_iterations, goal_evidence)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29)",
             params![
                 a.id.as_str(),
                 a.worktree_id.as_str(),
@@ -566,6 +576,11 @@ impl Store {
                 a.unattended as i64,
                 a.purpose.map(Role::as_str),
                 a.orchestrator as i64,
+                a.goal.as_ref().map(|g| g.condition.as_str()),
+                a.goal.as_ref().map(|g| g.state.as_str()),
+                a.goal.as_ref().map_or(0, |g| g.iterations),
+                a.goal.as_ref().map_or(0, |g| g.max_iterations),
+                a.goal.as_ref().and_then(|g| g.evidence.as_deref()),
             ],
         )?;
         Ok(())
@@ -598,6 +613,54 @@ impl Store {
             params![id.as_str(), text, at, pr_url],
         )?;
         Ok(())
+    }
+
+    /// A Claude Stop from `id`, judged by its GOAL (None without one): a
+    /// block's iteration, or the exhaustion, is persisted before this
+    /// returns, under the one lock that read the goal.
+    pub fn goal_on_stop(&self, id: &AgentId) -> Result<Option<(Goal, StopVerdict)>> {
+        let conn = self.conn.lock().unwrap();
+        let Some(goal) = agent_goal(&conn, id)? else {
+            return Ok(None);
+        };
+        let verdict = goal.on_stop();
+        match verdict {
+            StopVerdict::Block { iteration } => {
+                conn.execute(
+                    "UPDATE agents SET goal_iterations = ?2 WHERE id = ?1",
+                    params![id.as_str(), iteration],
+                )?;
+            }
+            StopVerdict::Exhaust => {
+                let state = goal.state.next(GoalEvent::BlockAtLimit);
+                conn.execute(
+                    "UPDATE agents SET goal_state = ?2 WHERE id = ?1",
+                    params![id.as_str(), state.map_err(anyhow::Error::msg)?.as_str()],
+                )?;
+            }
+            StopVerdict::Pass => {}
+        }
+        Ok(Some((goal, verdict)))
+    }
+
+    /// Move `id`'s GOAL by `event`, keeping `evidence` beside it when one
+    /// is given. Refused, changing nothing, with [`NO_OPEN_GOAL`] when the
+    /// row has no goal or `event` does not apply to its state.
+    pub fn apply_goal_event(
+        &self,
+        id: &AgentId,
+        event: GoalEvent,
+        evidence: Option<&str>,
+    ) -> Result<GoalState> {
+        let conn = self.conn.lock().unwrap();
+        let goal = agent_goal(&conn, id)?.context(NO_OPEN_GOAL)?;
+        let state = goal.state.next(event).map_err(anyhow::Error::msg)?;
+        conn.execute(
+            "UPDATE agents SET goal_state = ?2, goal_evidence = COALESCE(?3, goal_evidence)
+             WHERE id = ?1",
+            params![id.as_str(), state.as_str(), evidence],
+        )?;
+        Ok(state)
     }
 
     /// A `nebula send` reached the worker at `at`.
@@ -1123,7 +1186,8 @@ const AGENT_COLUMNS: &str = "id, worktree_id, name, status, archived, kind, \
                              claude_session_id, sort_order, status_changed_at, model, effort, \
                              archived_at, unseen, cloud_session_id, recent_prompts, custom_harness, \
                              issue_url, parent_agent_id, role, unattended, purpose, \
-                             orchestrator";
+                             orchestrator, goal, goal_state, goal_iterations, \
+                             goal_max_iterations, goal_evidence";
 const TERMINAL_COLUMNS: &str = "id, worktree_id, name, sort_order, run_command";
 const LINK_COLUMNS: &str = "id, worktree_id, url, sort_order";
 
@@ -1178,7 +1242,42 @@ fn row_to_agent(r: &rusqlite::Row) -> rusqlite::Result<Agent> {
             .as_deref()
             .and_then(Role::parse),
         orchestrator: r.get::<_, i64>(21)? != 0,
+        goal: row_to_goal(r, 22)?.map(Box::new),
     })
+}
+
+fn agent_goal(conn: &Connection, id: &AgentId) -> Result<Option<Goal>> {
+    let goal = conn
+        .query_row(
+            "SELECT goal, goal_state, goal_iterations, goal_max_iterations, goal_evidence
+             FROM agents WHERE id = ?1",
+            params![id.as_str()],
+            |r| row_to_goal(r, 0),
+        )
+        .optional()?;
+    Ok(goal.flatten())
+}
+
+/// The five `goal*` columns from `at` on: None without a condition or with
+/// a state this build cannot read.
+fn row_to_goal(r: &rusqlite::Row, at: usize) -> rusqlite::Result<Option<Goal>> {
+    let Some(condition) = r.get::<_, Option<String>>(at)? else {
+        return Ok(None);
+    };
+    let Some(state) = r
+        .get::<_, Option<String>>(at + 1)?
+        .as_deref()
+        .and_then(GoalState::parse)
+    else {
+        return Ok(None);
+    };
+    Ok(Some(Goal {
+        condition,
+        state,
+        iterations: r.get(at + 2)?,
+        max_iterations: r.get(at + 3)?,
+        evidence: r.get(at + 4)?,
+    }))
 }
 
 /// A stored kind string back into its kind. Bare `"custom"` never parses
@@ -1281,6 +1380,7 @@ mod tests {
             unattended: false,
             purpose: None,
             orchestrator: false,
+            goal: None,
         };
         let pr_url = "https://github.com/AgentSystemLabs/nebula/pull/42";
         store
@@ -1310,6 +1410,7 @@ mod tests {
             unattended: false,
             purpose: None,
             orchestrator: false,
+            goal: None,
         };
         store.insert_agent(&codex_agent).unwrap();
         let cursor_agent = Agent {
@@ -1336,6 +1437,7 @@ mod tests {
             unattended: false,
             purpose: None,
             orchestrator: false,
+            goal: None,
         };
         store.insert_agent(&cursor_agent).unwrap();
         let issue_url = "https://github.com/AgentSystemLabs/nebula/issues/15";
@@ -1363,6 +1465,7 @@ mod tests {
             unattended: false,
             purpose: None,
             orchestrator: false,
+            goal: None,
         };
         store
             .insert_agent_with_launch_context(&issue_agent, true, None, Some(issue_url))
@@ -1410,6 +1513,7 @@ mod tests {
             unattended: false,
             purpose: None,
             orchestrator: false,
+            goal: None,
         };
         store.insert_agent(&custom).unwrap();
         let (_, _, reloaded, _) = store.load_tree().unwrap();
@@ -1654,6 +1758,7 @@ mod tests {
             (None, false),
             "32: no worker, no orchestrator"
         );
+        assert_eq!(agents[0].goal, None, "33: no goal");
         let version: i64 = store
             .conn
             .lock()
@@ -1715,6 +1820,7 @@ mod tests {
             unattended: false,
             purpose: None,
             orchestrator: false,
+            goal: None,
         };
         store.insert_agent(&agent("lead", None)).unwrap();
         store.insert_agent(&agent("w1", Some("lead"))).unwrap();
@@ -1760,6 +1866,23 @@ mod tests {
         };
         store.insert_agent(&brain).unwrap();
         assert!(store.get_agent(&brain.id).unwrap().unwrap().orchestrator);
+        let goal = Goal {
+            condition: "tests pass".into(),
+            state: GoalState::Exhausted,
+            iterations: 4,
+            max_iterations: 4,
+            evidence: Some("ran out".into()),
+        };
+        let aimed = Agent {
+            orchestrator: true,
+            goal: Some(Box::new(goal.clone())),
+            ..agent("aimed", None)
+        };
+        store.insert_agent(&aimed).unwrap();
+        assert_eq!(
+            store.get_agent(&aimed.id).unwrap().unwrap().goal,
+            Some(Box::new(goal))
+        );
     }
 
     /// Real upgrade path: a v12 database (pre-workspaces) walks the whole
@@ -2079,6 +2202,7 @@ mod tests {
             unattended: false,
             purpose: None,
             orchestrator: false,
+            goal: None,
         };
 
         // Default-named session: pending until the agent titles it, and the
@@ -2173,6 +2297,7 @@ mod tests {
                     unattended: false,
                     purpose: None,
                     orchestrator: false,
+                    goal: None,
                 },
                 true,
             )
@@ -2309,6 +2434,7 @@ mod tests {
                     unattended: false,
                     purpose: None,
                     orchestrator: false,
+                    goal: None,
                 })
                 .unwrap();
         }
@@ -2381,6 +2507,7 @@ mod tests {
                 unattended: false,
                 purpose: None,
                 orchestrator: false,
+                goal: None,
             };
             store.insert_agent(&agent).unwrap();
             agent.id
@@ -2487,6 +2614,7 @@ mod tests {
                 unattended: false,
                 purpose: None,
                 orchestrator: false,
+                goal: None,
             })
             .unwrap();
         let entry = |n: usize| PromptEntry {

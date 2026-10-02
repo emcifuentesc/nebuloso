@@ -2530,7 +2530,25 @@ fn runs_on_line(a: &nebula_core::Agent, cfg: &mut Option<crate::config::Config>)
         out.push(' ');
         out.push_str(effort);
     }
+    if let Some(goal) = goal_marker(a) {
+        out.push_str(" · ");
+        out.push_str(&goal);
+    }
     out
+}
+
+/// An orchestrator's GOAL, as its card says it: open, or how it settled.
+/// No iteration count: a blocked Stop changes no row the TUI hears of. A
+/// cleared or unachievable goal says nothing; the session is done with it.
+fn goal_marker(a: &nebula_core::Agent) -> Option<String> {
+    use nebula_core::orchestration::GoalState;
+    let goal = a.goal.as_ref()?;
+    match goal.state {
+        GoalState::Open => Some("goal".into()),
+        GoalState::Done => Some("goal done".into()),
+        GoalState::Exhausted => Some("goal exhausted".into()),
+        GoalState::Unachievable | GoalState::Cleared => None,
+    }
 }
 
 /// Smallest GRID the welcome turns a nebula in: under it the sky would be
@@ -3725,6 +3743,7 @@ mod tests {
                 unattended: false,
                 purpose: None,
                 orchestrator: false,
+                goal: None,
             })
             .collect();
         app
@@ -4202,6 +4221,27 @@ mod tests {
         assert_eq!(runs_on_line(&a, &mut None), "claude opus high");
         a.cloud_session_id = Some("c1".into());
         assert_eq!(runs_on_line(&a, &mut None), "cloud high");
+    }
+
+    #[test]
+    fn an_orchestrators_card_says_where_its_goal_stands() {
+        use nebula_core::orchestration::{Goal, GoalState};
+        let mut a = a_tree().tree.agents[0].clone();
+        let mut says = |state, iterations| {
+            a.goal = Some(Box::new(Goal {
+                condition: "tests pass".into(),
+                state,
+                iterations,
+                max_iterations: 10,
+                evidence: None,
+            }));
+            runs_on_line(&a, &mut None)
+        };
+        assert_eq!(says(GoalState::Open, 3), "claude · goal");
+        assert_eq!(says(GoalState::Done, 3), "claude · goal done");
+        assert_eq!(says(GoalState::Exhausted, 10), "claude · goal exhausted");
+        assert_eq!(says(GoalState::Unachievable, 3), "claude");
+        assert_eq!(says(GoalState::Cleared, 3), "claude");
     }
 
     /// Every row of `body` as drawn with the view on it.
@@ -4920,6 +4960,7 @@ mod tests {
                     unattended: false,
                     purpose: None,
                     orchestrator: false,
+                    goal: None,
                 },
                 project: "nebula".into(),
                 branch: branch.into(),
@@ -5160,6 +5201,7 @@ mod tests {
             unattended: false,
             purpose: None,
             orchestrator: false,
+            goal: None,
         };
         let th = Theme::by_name("amber");
         let mut app = App::new();
@@ -5273,6 +5315,7 @@ mod tests {
                 unattended: false,
                 purpose: None,
                 orchestrator: false,
+                goal: None,
             },
             project: "nebula".into(),
             branch: "feat-x".into(),
@@ -5333,6 +5376,7 @@ mod tests {
                 unattended: false,
                 purpose: None,
                 orchestrator: false,
+                goal: None,
             },
             project: "nebula".into(),
             branch: "feat-x".into(),
@@ -5488,6 +5532,7 @@ mod tests {
                     unattended: false,
                     purpose: None,
                     orchestrator: false,
+                    goal: None,
                 },
                 project: "nebula".into(),
                 branch: "main".into(),
