@@ -139,6 +139,12 @@ pub fn run_roster() -> Result<()> {
     runtime()?.block_on(ipc::print_roster())
 }
 
+/// `nebula archive <id>` — archive one of this session's settled workers
+/// (see `ipc::archive_child`).
+pub fn run_archive(child: String) -> Result<()> {
+    runtime()?.block_on(ipc::archive_child(nebula_core::AgentId(child)))
+}
+
 /// `nebula wait <id>…` — block until the workers settle and return how
 /// they did as the exit code (see `ipc::wait_for_children`).
 pub fn run_wait(

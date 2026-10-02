@@ -4809,6 +4809,77 @@ async fn children_status_and_wait_report_the_callers_workers() {
     wait_for_exit(&mut daemon);
 }
 
+/// `nebula archive` over the real binary: a worker still on its starting
+/// prompt is refused, and once its Stop hook lands the archive succeeds and
+/// `nebula children` no longer lists it. A stranger is refused.
+#[tokio::test]
+async fn archive_waits_for_a_settled_worker_and_drops_it_from_children() {
+    let env = TestEnv::new();
+    let repo = env.make_repo();
+    let env_dir = env.tmp.path().join("agent-env");
+    std::fs::create_dir_all(&env_dir).unwrap();
+    let script = env.tmp.path().join("agent.sh");
+    std::fs::write(
+        &script,
+        format!(
+            "#!/bin/sh\nenv | grep '^NEBULA_' > '{0}'/$NEBULA_AGENT_ID.env\nexec cat > /dev/null\n",
+            env_dir.display()
+        ),
+    )
+    .unwrap();
+    make_executable(&script);
+    let mut daemon = env.spawn_daemon_with_agent_cmd(script.to_str().unwrap());
+    let mut c = connect(&env.sock()).await;
+    handshake(&mut c).await;
+    let main_worktree = add_project_get_main_worktree(&mut c, &repo).await;
+    let lead = create_agent_get_id(&mut c, &main_worktree.id, "lead", 2).await;
+    let lead_env = read_env_file(&env_dir.join(format!("{}.env", lead.0))).await;
+    let port: u16 = lead_env[env::API_URL]
+        .rsplit(':')
+        .next()
+        .unwrap()
+        .parse()
+        .unwrap();
+    let token = lead_env[env::API_TOKEN].clone();
+
+    let out = agent_cli(&env, &lead, &["spawn", "--child", "write the tests"]);
+    assert!(out.status.success(), "child spawn failed: {out:?}");
+    let line: serde_json::Value =
+        serde_json::from_str(String::from_utf8(out.stdout).unwrap().trim()).unwrap();
+    let worker = nebula_core::AgentId(line["id"].as_str().unwrap().to_string());
+
+    let out = agent_cli(&env, &lead, &["archive", &worker.0]);
+    assert!(!out.status.success(), "a Fresh worker must be refused");
+    assert!(out.stdout.is_empty(), "a refusal prints nothing: {out:?}");
+    assert!(
+        String::from_utf8_lossy(&out.stderr)
+            .contains(&format!("{} is mid-turn; wait first", worker.0)),
+        "{out:?}"
+    );
+
+    let out = agent_cli(&env, &worker, &["archive", &lead.0]);
+    assert!(!out.status.success(), "archiving a stranger must fail");
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains(&format!("{} is not your worker", lead.0)),
+        "{out:?}"
+    );
+
+    for event in ["UserPromptSubmit", "Stop"] {
+        let path = format!("/api/hooks/claude?agentId={}&hookEvent={event}", worker.0);
+        let (status, _) = hook_post(port, &path, &token).await;
+        assert_eq!(status, 200, "{event}");
+    }
+    let out = agent_cli(&env, &lead, &["archive", &worker.0]);
+    assert!(out.status.success(), "archive failed: {out:?}");
+    assert!(out.stdout.is_empty(), "archive prints nothing: {out:?}");
+
+    let out = agent_cli(&env, &lead, &["children"]);
+    assert_eq!(String::from_utf8(out.stdout).unwrap(), "[]\n");
+
+    write_frame(&mut c, &ClientRequest::Shutdown).await.unwrap();
+    wait_for_exit(&mut daemon);
+}
+
 /// `nebula report` and `nebula result` over the real binary: a worker in
 /// its own worktree reports, and its lead's `result` shows that report
 /// fresh beside the file it left untracked in the checkout. The lead

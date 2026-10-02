@@ -116,6 +116,9 @@ nebula result <id>        # one JSON object for the worker: {"id","name","kind",
                           # from the merge-base with base to the working tree, untracked apart
                           # (each capped at 200 lines); a fact git cannot read is null, with
                           # git's reason in "diff_error"
+nebula archive <id>       # archive the worker (its process stops, its max_children slot frees);
+                          # prints nothing. Refused, nonzero, for a worker mid-turn ("<id> is
+                          # mid-turn; wait first") or one that is not this session's
 nebula open <file>…       # show the files in this nebula's FILE TABS — a modal with one tab per
                           # file, the focused one previewed, Enter editing it (agents run this only
                           # when you ask to see a file; text files only — an image or any other

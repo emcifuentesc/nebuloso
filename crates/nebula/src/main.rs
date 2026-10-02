@@ -71,6 +71,7 @@ fn main() -> Result<()> {
         Some(Command::Report { pr, text }) => nebula_tui::run_report(text.join(" "), pr),
         Some(Command::Result { id }) => nebula_tui::run_result(id),
         Some(Command::Roster) => nebula_tui::run_roster(),
+        Some(Command::Archive { id }) => nebula_tui::run_archive(id),
         Some(Command::Open { files }) => nebula_tui::run_open(files),
         Some(Command::Browser {
             port,

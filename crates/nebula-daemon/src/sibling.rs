@@ -479,6 +479,17 @@ impl Daemon {
             .set_agent_last_send_at(child, nebula_core::clock::now_ms())
     }
 
+    /// `nebula archive <id>`: the caller's settled worker `child`, archived
+    /// as the TUI archives it. A worker mid-turn is refused so an
+    /// orchestrator cannot kill live work.
+    pub fn archive_child(self: &Arc<Self>, caller: &AgentId, child: &AgentId) -> Result<()> {
+        let agent = self.worker_of(caller, child)?;
+        if !agent.status.is_settled() || self.awaiting_turn(child) {
+            bail!("{child} is mid-turn; wait first");
+        }
+        self.archive_agent(child)
+    }
+
     /// `nebula report`, run by a worker: `text`, cut to
     /// [`MAX_REPORT_BYTES`], as its report over any earlier one, and
     /// `pr_url` as its PR.
@@ -933,6 +944,92 @@ mod tests {
             let err = send(&daemon, stranger, "hi").expect_err("not a worker");
             assert_eq!(err.to_string(), format!("{stranger} is not your worker"));
         }
+    }
+
+    fn archive(daemon: &Arc<Daemon>, caller: &str, child: &str) -> Result<()> {
+        daemon.archive_child(&AgentId(caller.into()), &AgentId(child.into()))
+    }
+
+    #[test]
+    fn archive_refuses_an_id_that_is_not_the_callers_worker() {
+        let daemon = daemon();
+        lead(&daemon);
+        daemon
+            .store
+            .insert_agent(&agent("other", "root", AgentKind::Claude, None))
+            .unwrap();
+        worker_of(&daemon, "theirs", "other", "feat");
+        for stranger in ["theirs", "lead", "missing"] {
+            let err = archive(&daemon, "lead", stranger).expect_err("not a worker");
+            assert_eq!(err.to_string(), format!("{stranger} is not your worker"));
+        }
+        assert!(
+            !daemon
+                .store
+                .get_agent(&AgentId("theirs".into()))
+                .unwrap()
+                .unwrap()
+                .archived
+        );
+    }
+
+    #[test]
+    fn archive_refuses_a_worker_mid_turn() {
+        let daemon = daemon();
+        lead(&daemon);
+        worker_of(&daemon, "w", "lead", "feat");
+        let err = archive(&daemon, "lead", "w").unwrap_err();
+        assert_eq!(err.to_string(), "w is mid-turn; wait first");
+        set_status(&daemon, "w", AgentStatus::Running);
+        assert!(archive(&daemon, "lead", "w").is_err());
+        assert!(
+            !daemon
+                .store
+                .get_agent(&AgentId("w".into()))
+                .unwrap()
+                .unwrap()
+                .archived
+        );
+    }
+
+    #[tokio::test]
+    async fn archive_refuses_a_worker_awaiting_a_sent_turn() {
+        let daemon = daemon();
+        lead(&daemon);
+        worker_of(&daemon, "w", "lead", "feat");
+        set_status(&daemon, "w", AgentStatus::Finished);
+        go_live(&daemon, "w");
+        send(&daemon, "w", "next").unwrap();
+        let err = archive(&daemon, "lead", "w").unwrap_err();
+        assert_eq!(err.to_string(), "w is mid-turn; wait first");
+    }
+
+    #[test]
+    fn archiving_a_settled_worker_frees_its_child_slot() {
+        let daemon = daemon();
+        lead(&daemon);
+        worker_of(&daemon, "w", "lead", "feat");
+        set_status(&daemon, "w", AgentStatus::Finished);
+        let one = Orchestration {
+            max_children: 1,
+            ..Orchestration::default()
+        };
+        let spawn =
+            || daemon.sibling_spec(&AgentId("lead".into()), None, "x", Some(&child(None)), &one);
+        assert_eq!(
+            spawn().err().unwrap().to_string(),
+            "child limit reached (1)"
+        );
+        archive(&daemon, "lead", "w").unwrap();
+        assert!(
+            daemon
+                .store
+                .get_agent(&AgentId("w".into()))
+                .unwrap()
+                .unwrap()
+                .archived
+        );
+        assert!(spawn().is_ok());
     }
 
     #[test]
