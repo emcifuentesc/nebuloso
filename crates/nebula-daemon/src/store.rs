@@ -1242,7 +1242,7 @@ fn row_to_agent(r: &rusqlite::Row) -> rusqlite::Result<Agent> {
             .as_deref()
             .and_then(Role::parse),
         orchestrator: r.get::<_, i64>(21)? != 0,
-        goal: row_to_goal(r, 22)?,
+        goal: row_to_goal(r, 22)?.map(Box::new),
     })
 }
 
@@ -1875,13 +1875,13 @@ mod tests {
         };
         let aimed = Agent {
             orchestrator: true,
-            goal: Some(goal.clone()),
+            goal: Some(Box::new(goal.clone())),
             ..agent("aimed", None)
         };
         store.insert_agent(&aimed).unwrap();
         assert_eq!(
             store.get_agent(&aimed.id).unwrap().unwrap().goal,
-            Some(goal)
+            Some(Box::new(goal))
         );
     }
 

@@ -1217,13 +1217,13 @@ mod tests {
             .store
             .insert_agent(&Agent {
                 orchestrator: true,
-                goal: Some(Goal {
+                goal: Some(Box::new(Goal {
                     condition: "tests pass".into(),
                     state: GoalState::Open,
                     iterations: 1,
                     max_iterations: 10,
                     evidence: None,
-                }),
+                })),
                 ..agent("brain", "root", AgentKind::Claude, None)
             })
             .unwrap();

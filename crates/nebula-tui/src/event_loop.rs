@@ -17504,13 +17504,13 @@ diff --git a/src/c.rs b/src/c.rs
             (GoalState::Done, false),
             (GoalState::Exhausted, false),
         ] {
-            a.goal = Some(Goal {
+            a.goal = Some(Box::new(Goal {
                 condition: "tests pass".into(),
                 state,
                 iterations: 0,
                 max_iterations: 10,
                 evidence: None,
-            });
+            }));
             assert_eq!(offers(&a), offered, "{state:?}");
         }
         let mut out = Vec::new();

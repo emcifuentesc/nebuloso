@@ -763,7 +763,7 @@ mod tests {
             .insert_agent(&Agent {
                 id: AgentId("brain".into()),
                 orchestrator: true,
-                goal: Some(goal),
+                goal: Some(Box::new(goal)),
                 ..titled.clone()
             })
             .unwrap();

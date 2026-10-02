@@ -1206,7 +1206,7 @@ impl Daemon {
             unattended,
             purpose,
             orchestrator,
-            goal,
+            goal: goal.map(Box::new),
         };
         self.store.insert_agent_with_launch_context(
             &agent,

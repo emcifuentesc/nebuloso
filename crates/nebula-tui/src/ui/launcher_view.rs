@@ -4228,13 +4228,13 @@ mod tests {
         use nebula_core::orchestration::{Goal, GoalState};
         let mut a = a_tree().tree.agents[0].clone();
         let mut says = |state, iterations| {
-            a.goal = Some(Goal {
+            a.goal = Some(Box::new(Goal {
                 condition: "tests pass".into(),
                 state,
                 iterations,
                 max_iterations: 10,
                 evidence: None,
-            });
+            }));
             runs_on_line(&a, &mut None)
         };
         assert_eq!(says(GoalState::Open, 3), "claude · goal");

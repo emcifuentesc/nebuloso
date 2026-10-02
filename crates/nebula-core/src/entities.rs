@@ -284,7 +284,7 @@ pub struct Agent {
     pub orchestrator: bool,
     /// An orchestrator's GOAL, kept after it settles so the row can say how.
     #[serde(default)]
-    pub goal: Option<crate::orchestration::Goal>,
+    pub goal: Option<Box<crate::orchestration::Goal>>,
 }
 
 impl Agent {
