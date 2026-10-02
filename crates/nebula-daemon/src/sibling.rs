@@ -11,7 +11,9 @@
 use std::sync::Arc;
 
 use anyhow::{bail, Context, Result};
-use nebula_core::{AgentId, AgentKind, ChildSpawn, EntityId, SpawnWorktree, Worktree, WorktreeId};
+use nebula_core::{
+    AgentId, AgentKind, ChildSpawn, ChildStatus, EntityId, SpawnWorktree, Worktree, WorktreeId,
+};
 
 use crate::git;
 use crate::registry::{validate_starting_prompt, CreateAgentSpec, Daemon};
@@ -185,6 +187,41 @@ impl Daemon {
             other => unreachable!("create_agent returned {other:?}"),
         }
     }
+
+    /// `nebula children` / `status` / `wait`: the caller's workers named
+    /// by `ids`, in that order, or every unarchived one, oldest first, when
+    /// `ids` is empty. Any id that is not the caller's worker refuses the
+    /// whole request, so a refusal says nothing about any agent.
+    pub fn child_statuses(&self, caller: &AgentId, ids: &[AgentId]) -> Result<Vec<ChildStatus>> {
+        let agents = if ids.is_empty() {
+            self.store.child_agents(caller)?
+        } else {
+            ids.iter()
+                .map(|id| match self.store.get_agent(id)? {
+                    Some(agent) if agent.parent_agent_id.as_ref() == Some(caller) => Ok(agent),
+                    _ => bail!("{id} is not your worker"),
+                })
+                .collect::<Result<Vec<_>>>()?
+        };
+        agents
+            .into_iter()
+            .map(|agent| {
+                let worktree = self
+                    .store
+                    .get_worktree(&agent.worktree_id)?
+                    .context("worktree not found")?;
+                Ok(ChildStatus {
+                    id: agent.id,
+                    name: agent.name,
+                    kind: agent.kind,
+                    status: agent.status,
+                    status_changed_at: agent.status_changed_at,
+                    worktree: worktree.path,
+                    branch: worktree.branch,
+                })
+            })
+            .collect()
+    }
 }
 
 #[cfg(test)]
@@ -193,6 +230,7 @@ mod tests {
     use crate::hooks::HookEnv;
     use crate::store::Store;
     use nebula_core::{Agent, AgentStatus, Project, ProjectId, Worktree, WorktreeId};
+    use std::path::PathBuf;
 
     fn daemon() -> Arc<Daemon> {
         let daemon = Daemon::new(
@@ -355,6 +393,107 @@ mod tests {
         assert!(daemon
             .sibling_spec(&AgentId("worker".into()), None, "x", None)
             .is_ok());
+    }
+
+    fn worker_of(daemon: &Daemon, id: &str, parent: &str, worktree: &str) -> Agent {
+        let mut worker = agent(id, worktree, AgentKind::Claude, None);
+        worker.parent_agent_id = Some(AgentId(parent.into()));
+        daemon.store.insert_agent(&worker).unwrap();
+        // created_at is in ms; keep the next row strictly newer.
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        worker
+    }
+
+    fn ids(children: &[ChildStatus]) -> Vec<&str> {
+        children.iter().map(|c| c.id.as_str()).collect()
+    }
+
+    #[test]
+    fn child_statuses_answers_for_named_workers_in_argument_order() {
+        let daemon = daemon();
+        daemon
+            .store
+            .insert_agent(&agent("lead", "root", AgentKind::Claude, None))
+            .unwrap();
+        worker_of(&daemon, "w-1", "lead", "feat");
+        worker_of(&daemon, "w-2", "lead", "root");
+        daemon
+            .store
+            .set_agent_status(&AgentId("w-2".into()), AgentStatus::Finished)
+            .unwrap();
+
+        let children = daemon
+            .child_statuses(
+                &AgentId("lead".into()),
+                &[AgentId("w-2".into()), AgentId("w-1".into())],
+            )
+            .unwrap();
+        assert_eq!(ids(&children), ["w-2", "w-1"]);
+        assert_eq!(children[0].status, AgentStatus::Finished);
+        assert_eq!(children[1].status, AgentStatus::Running);
+        assert_eq!(children[1].worktree, PathBuf::from("/nebula-test/p-feat"));
+        assert_eq!(children[1].branch, "feat");
+    }
+
+    #[test]
+    fn child_statuses_with_no_ids_is_every_unarchived_worker_oldest_first() {
+        let daemon = daemon();
+        daemon
+            .store
+            .insert_agent(&agent("lead", "root", AgentKind::Claude, None))
+            .unwrap();
+        worker_of(&daemon, "w-b", "lead", "feat");
+        worker_of(&daemon, "w-c", "lead", "feat");
+        daemon
+            .store
+            .set_agent_archived(&AgentId("w-c".into()), true)
+            .unwrap();
+        worker_of(&daemon, "w-a", "lead", "feat");
+        daemon
+            .store
+            .insert_agent(&agent("other-lead", "root", AgentKind::Claude, None))
+            .unwrap();
+        worker_of(&daemon, "other", "other-lead", "feat");
+
+        let children = daemon.child_statuses(&AgentId("lead".into()), &[]).unwrap();
+        assert_eq!(ids(&children), ["w-b", "w-a"]);
+    }
+
+    #[test]
+    fn child_statuses_refuses_an_id_that_is_not_the_callers_worker() {
+        let daemon = daemon();
+        daemon
+            .store
+            .insert_agent(&agent("lead", "root", AgentKind::Claude, None))
+            .unwrap();
+        daemon
+            .store
+            .insert_agent(&agent("other", "root", AgentKind::Claude, None))
+            .unwrap();
+        worker_of(&daemon, "mine", "lead", "feat");
+        worker_of(&daemon, "theirs", "other", "feat");
+        for stranger in ["theirs", "lead", "missing"] {
+            let err = daemon
+                .child_statuses(
+                    &AgentId("lead".into()),
+                    &[AgentId("mine".into()), AgentId(stranger.into())],
+                )
+                .expect_err("a stranger refuses the whole request");
+            assert_eq!(err.to_string(), format!("{stranger} is not your worker"));
+        }
+    }
+
+    #[test]
+    fn child_statuses_of_a_session_without_workers_is_empty() {
+        let daemon = daemon();
+        daemon
+            .store
+            .insert_agent(&agent("lead", "root", AgentKind::Claude, None))
+            .unwrap();
+        assert!(daemon
+            .child_statuses(&AgentId("lead".into()), &[])
+            .unwrap()
+            .is_empty());
     }
 
     #[test]

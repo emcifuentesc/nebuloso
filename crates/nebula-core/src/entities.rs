@@ -42,6 +42,18 @@ impl AgentStatus {
             _ => return None,
         })
     }
+
+    /// Done with its turn for now: the session will not move again until
+    /// someone acts on it. Fresh and Running are not.
+    pub fn is_settled(self) -> bool {
+        match self {
+            AgentStatus::Fresh | AgentStatus::Running => false,
+            AgentStatus::Finished
+            | AgentStatus::NeedsFeedback
+            | AgentStatus::Terminated
+            | AgentStatus::Disconnected => true,
+        }
+    }
 }
 
 /// Which agent CLI a session runs.
@@ -345,4 +357,23 @@ pub enum EntityId {
     Agent(AgentId),
     Terminal(TerminalId),
     Link(LinkId),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn settled_is_every_status_but_fresh_and_running() {
+        for (status, settled) in [
+            (AgentStatus::Fresh, false),
+            (AgentStatus::Running, false),
+            (AgentStatus::Finished, true),
+            (AgentStatus::NeedsFeedback, true),
+            (AgentStatus::Terminated, true),
+            (AgentStatus::Disconnected, true),
+        ] {
+            assert_eq!(status.is_settled(), settled, "{status:?}");
+        }
+    }
 }

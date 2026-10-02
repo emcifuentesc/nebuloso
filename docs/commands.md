@@ -65,6 +65,17 @@ nebula spawn --child [--worktree <branch> [--base <ref>]] [--model <m>] [--effor
                           # --worktree (implies --child) cuts a new branch, which must not exist,
                           # and runs the worker there, --base resolved as for nebula worktree;
                           # a worker cannot start workers, and a session may have 8 unarchived ones
+nebula children           # this session's unarchived workers as one JSON array, oldest first, of
+                          # {"id","name","kind","status","status_changed_at","worktree","branch"};
+                          # [] when it has none
+nebula status <id>…       # the same array for these workers, in this order; an id that is not this
+                          # session's worker is refused with "<id> is not your worker", nothing printed
+nebula wait <id>… [--any] [--timeout <dur>]
+                          # poll once a second until every worker is settled (finished,
+                          # needs_feedback, terminated, disconnected), or with --any one is, then
+                          # print the status array for all of them; --timeout takes 90s, 5m, 1h
+                          # (default 30m). Exit 12 on timeout, else over the settled workers 11 if
+                          # one terminated or disconnected, 10 if one needs feedback, else 0
 nebula open <file>…       # show the files in this nebula's FILE TABS — a modal with one tab per
                           # file, the focused one previewed, Enter editing it (agents run this only
                           # when you ask to see a file; text files only — an image or any other

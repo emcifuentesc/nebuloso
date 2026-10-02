@@ -4,8 +4,8 @@
 use anyhow::{bail, Context, Result};
 use nebula_core::codec::{read_frame, write_frame};
 use nebula_core::{
-    env, paths, AgentId, AgentKind, ChildSpawn, ClientRequest, EnterOutcome, ServerEvent,
-    PROTOCOL_VERSION,
+    env, paths, AgentId, AgentKind, AgentStatus, ChildSpawn, ChildStatus, ClientRequest,
+    EnterOutcome, ServerEvent, PROTOCOL_VERSION,
 };
 use std::time::Duration;
 use tokio::net::UnixStream;
@@ -395,6 +395,143 @@ pub async fn spawn_sibling_for_current_agent(
     Ok(())
 }
 
+/// One connection asking the daemon about this session's workers, for
+/// `nebula children`, `status` and `wait`. Never spawns a daemon: a fresh
+/// one has no workers to report.
+struct Workers {
+    conn: Connection,
+    caller: AgentId,
+    next_req_id: u64,
+}
+
+impl Workers {
+    async fn connect(verb: &str) -> Result<Self> {
+        let caller = AgentId(current_agent_id(verb)?);
+        let sock = paths::socket_path();
+        let Ok(stream) = try_connect(&sock).await else {
+            bail!("no nebula daemon is running — no workers to report");
+        };
+        Ok(Self {
+            conn: handshake(stream).await?,
+            caller,
+            next_req_id: ONE_SHOT_REQ_ID,
+        })
+    }
+
+    /// The workers named by `ids` in that order, or every unarchived one
+    /// when `ids` is empty. A refusal is the daemon's message as an `Err`.
+    async fn statuses(&mut self, ids: &[AgentId]) -> Result<Vec<ChildStatus>> {
+        let req_id = self.next_req_id;
+        self.next_req_id += 1;
+        write_frame(
+            &mut self.conn.stream,
+            &ClientRequest::ChildStatus {
+                req_id,
+                id: self.caller.clone(),
+                ids: ids.to_vec(),
+            },
+        )
+        .await?;
+        loop {
+            match read_frame::<ServerEvent, _>(&mut self.conn.stream).await? {
+                Some(ServerEvent::ChildStatuses {
+                    req_id: r,
+                    children,
+                }) if r == req_id => return Ok(children),
+                Some(ServerEvent::Error {
+                    req_id: Some(r),
+                    message,
+                }) if r == req_id => bail!("{message}"),
+                Some(_) => continue,
+                None => bail!("{CLOSED_BEFORE_REPLY}"),
+            }
+        }
+    }
+}
+
+fn print_statuses(children: &[ChildStatus]) -> Result<()> {
+    println!("{}", serde_json::to_string(children)?);
+    Ok(())
+}
+
+/// CLI: `nebula children` (no `ids`) and `nebula status <id>…`, from
+/// inside an agent session: print this session's workers as one JSON
+/// array of `ChildStatus`. An id that is not this session's worker is a
+/// nonzero exit with the daemon's refusal, and nothing on stdout.
+pub async fn print_child_statuses(ids: Vec<AgentId>, verb: &str) -> Result<()> {
+    let mut workers = Workers::connect(verb).await?;
+    print_statuses(&workers.statuses(&ids).await?)
+}
+
+/// How `nebula wait` ended, as its exit code: distinct per outcome so the
+/// session that ran it can branch without parsing the JSON.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WaitExit {
+    Settled = 0,
+    NeedsFeedback = 10,
+    Failed = 11,
+    TimedOut = 12,
+}
+
+/// Whether `nebula wait` is done with these statuses and, if so, how:
+/// once all of them are settled, or with `any` once one is. The verdict
+/// is over the settled ones only, the worst first: a session that died
+/// (Terminated, Disconnected), then one waiting on the user.
+pub fn wait_exit(statuses: &[AgentStatus], any: bool) -> Option<WaitExit> {
+    let settled = statuses
+        .iter()
+        .copied()
+        .filter(|s| s.is_settled())
+        .collect::<Vec<_>>();
+    let done = if any {
+        !settled.is_empty()
+    } else {
+        settled.len() == statuses.len()
+    };
+    if !done {
+        return None;
+    }
+    Some(
+        if settled
+            .iter()
+            .any(|s| matches!(s, AgentStatus::Terminated | AgentStatus::Disconnected))
+        {
+            WaitExit::Failed
+        } else if settled.contains(&AgentStatus::NeedsFeedback) {
+            WaitExit::NeedsFeedback
+        } else {
+            WaitExit::Settled
+        },
+    )
+}
+
+/// CLI: `nebula wait <id>… [--any] [--timeout <dur>]`: poll the workers
+/// once a second until [`wait_exit`] says done or `timeout` passes, then
+/// print every one of them, settled or not, in argument order. Polling,
+/// not a subscription, so there is no snapshot-then-stream race to close.
+pub async fn wait_for_children(
+    ids: Vec<AgentId>,
+    any: bool,
+    timeout: Duration,
+) -> Result<WaitExit> {
+    let mut workers = Workers::connect("wait").await?;
+    let deadline = tokio::time::Instant::now() + timeout;
+    loop {
+        let children = workers.statuses(&ids).await?;
+        let statuses = children.iter().map(|c| c.status).collect::<Vec<_>>();
+        let exit = wait_exit(&statuses, any)
+            .or_else(|| (tokio::time::Instant::now() >= deadline).then_some(WaitExit::TimedOut));
+        if let Some(exit) = exit {
+            print_statuses(&children)?;
+            return Ok(exit);
+        }
+        tokio::time::sleep_until(
+            deadline.min(tokio::time::Instant::now() + Duration::from_secs(1)),
+        )
+        .await;
+    }
+}
+
 /// CLI: `nebula open <file>…` from inside an agent session — resolve the
 /// paths here, where the cwd is the agent's, and hand them to the daemon,
 /// which raises every attached TUI's FILE TABS on them. Never spawns a
@@ -758,6 +895,41 @@ fn send_signal(pid: i32, sig: i32) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn wait_exit_is_decided_over_the_settled_children() {
+        use AgentStatus::*;
+        for (statuses, any, exit) in [
+            (&[Running, Finished][..], false, None),
+            (&[Fresh][..], false, None),
+            (&[Running, Fresh][..], true, None),
+            (&[Finished, Finished][..], false, Some(WaitExit::Settled)),
+            (
+                &[Finished, NeedsFeedback][..],
+                false,
+                Some(WaitExit::NeedsFeedback),
+            ),
+            (
+                &[NeedsFeedback, Terminated][..],
+                false,
+                Some(WaitExit::Failed),
+            ),
+            (&[Finished, Disconnected][..], false, Some(WaitExit::Failed)),
+            (&[Running, Finished][..], true, Some(WaitExit::Settled)),
+            (
+                &[Running, NeedsFeedback][..],
+                true,
+                Some(WaitExit::NeedsFeedback),
+            ),
+            (
+                &[Running, Finished, Terminated][..],
+                true,
+                Some(WaitExit::Failed),
+            ),
+        ] {
+            assert_eq!(wait_exit(statuses, any), exit, "{statuses:?} any={any}");
+        }
+    }
 
     // Unset and empty are the same miss, and the error has to name the
     // command the model just ran so it knows why it can't work here.

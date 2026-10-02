@@ -56,6 +56,12 @@ fn main() -> Result<()> {
             });
             nebula_tui::run_spawn(task.join(" "), kind, child)
         }
+        Some(Command::Children) => nebula_tui::run_child_status(Vec::new(), "children"),
+        Some(Command::Status { ids }) => nebula_tui::run_child_status(ids, "status"),
+        Some(Command::Wait { ids, any, timeout }) => {
+            let exit = nebula_tui::run_wait(ids, any, timeout)?;
+            std::process::exit(exit as i32)
+        }
         Some(Command::Open { files }) => nebula_tui::run_open(files),
         Some(Command::Browser {
             port,
