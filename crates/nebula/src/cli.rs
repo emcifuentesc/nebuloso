@@ -313,6 +313,17 @@ pub(crate) enum Command {
         #[arg(value_name = "ID")]
         id: String,
     },
+    /// Archive one of this session's workers.
+    ///
+    /// Stops the worker's process and frees its `max_children` slot, printing
+    /// nothing. Refused while the worker is mid-turn, and for an id that is
+    /// not this session's worker.
+    #[command(after_help = ARCHIVE_EXAMPLES)]
+    Archive {
+        /// Worker id, as `nebula spawn --child` printed it.
+        #[arg(value_name = "ID")]
+        id: String,
+    },
     /// Show files to the user inside this nebula.
     ///
     /// Run from inside a nebula agent session; agents run it only when you
@@ -530,6 +541,10 @@ Examples:
 const RESULT_EXAMPLES: &str = "\
 Examples:
   nebula wait 01JB7Y3K2Q && nebula result 01JB7Y3K2Q";
+
+const ARCHIVE_EXAMPLES: &str = "\
+Examples:
+  nebula archive 01JB7Y3K2Q";
 
 const OPEN_EXAMPLES: &str = "\
 Examples:

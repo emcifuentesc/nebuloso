@@ -467,6 +467,22 @@ impl Workers {
         await_ack(&mut self.conn, req_id).await
     }
 
+    /// Archive worker `child`. A refusal is the daemon's message as an `Err`.
+    async fn archive(&mut self, child: AgentId) -> Result<()> {
+        let req_id = self.next_req_id;
+        self.next_req_id += 1;
+        write_frame(
+            &mut self.conn.stream,
+            &ClientRequest::ArchiveChild {
+                req_id,
+                id: self.caller.clone(),
+                child,
+            },
+        )
+        .await?;
+        await_ack(&mut self.conn, req_id).await
+    }
+
     /// `text` as this session's report to its orchestrator.
     async fn report(&mut self, text: String, pr_url: Option<String>) -> Result<()> {
         let req_id = self.next_req_id;
@@ -585,6 +601,13 @@ pub async fn print_child_statuses(ids: Vec<AgentId>, verb: &str) -> Result<()> {
 /// is a nonzero exit with the daemon's message.
 pub async fn send_to_child(child: AgentId, text: String) -> Result<()> {
     Workers::connect("send").await?.send(child, text).await
+}
+
+/// CLI: `nebula archive <id>`, from inside an agent session: archive this
+/// session's settled worker `child`. Prints nothing; a refusal is a nonzero
+/// exit with the daemon's message.
+pub async fn archive_child(child: AgentId) -> Result<()> {
+    Workers::connect("archive").await?.archive(child).await
 }
 
 /// How `nebula wait` ended, as its exit code: distinct per outcome so the
