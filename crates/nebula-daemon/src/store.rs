@@ -946,6 +946,18 @@ impl Store {
         Ok(rows.next()?.map(row_to_agent).transpose()?)
     }
 
+    /// The unarchived workers of `parent`, oldest first.
+    pub fn child_agents(&self, parent: &AgentId) -> Result<Vec<Agent>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(&format!(
+            "SELECT {AGENT_COLUMNS} FROM agents WHERE parent_agent_id = ?1 AND archived = 0 ORDER BY created_at, id"
+        ))?;
+        let agents = stmt
+            .query_map(params![parent.as_str()], row_to_agent)?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(agents)
+    }
+
     pub fn get_terminal(&self, id: &TerminalId) -> Result<Option<TerminalTab>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(&format!(

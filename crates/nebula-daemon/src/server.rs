@@ -513,6 +513,16 @@ async fn handle_client(daemon: Arc<Daemon>, stream: UnixStream) -> Result<()> {
                         }
                     }
                 }
+                ClientRequest::ChildStatus { req_id, id, ids } => {
+                    let ev = match daemon.child_statuses(&id, &ids) {
+                        Ok(children) => ServerEvent::ChildStatuses { req_id, children },
+                        Err(e) => ServerEvent::Error {
+                            req_id: Some(req_id),
+                            message: format!("{e:#}"),
+                        },
+                    };
+                    let _ = out_tx.send(ev).await;
+                }
                 ClientRequest::OpenFiles { req_id, id, paths } => {
                     reply_done(&out_tx, req_id, daemon.open_files(&id, paths)).await;
                 }
