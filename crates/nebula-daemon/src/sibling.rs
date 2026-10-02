@@ -74,10 +74,17 @@ pub(crate) fn worker_guidance(base_ref: Option<&str>) -> String {
          `BLOCKED:`, list the files changed, and pass `--pr <url>` if you opened a PR.",
     );
     if let Some(base) = base_ref {
-        let base = base.strip_prefix("origin/").unwrap_or(base);
+        // A worktree cut from the default branch records `origin/HEAD`, which
+        // is no branch name gh can target; without `--base` gh picks that
+        // same default branch.
+        let base_flag = match base.strip_prefix("origin/").unwrap_or(base) {
+            "HEAD" => String::new(),
+            branch => format!(" --base {branch}"),
+        };
         text.push_str(&format!(
-            " Implementers: commit, `git push -u origin HEAD`, then `gh pr create --fill --base \
-             {base}`. If push or `gh` fails, report `BLOCKED:` with the error's first line."
+            " Implementers: commit, `git push -u origin HEAD`, then `gh pr create \
+             --fill{base_flag}`. If push or `gh` fails, report `BLOCKED:` with the error's first \
+             line."
         ));
     }
     format!("<nebula-worker-guidance>\n{text}\n</nebula-worker-guidance>")
@@ -394,6 +401,17 @@ impl Daemon {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn worker_guidance_names_the_pr_base_only_when_it_is_a_branch() {
+        assert!(worker_guidance(Some("origin/main")).contains("gh pr create --fill --base main`"));
+        let default_branch = worker_guidance(Some("origin/HEAD"));
+        assert!(
+            default_branch.contains("gh pr create --fill`"),
+            "origin/HEAD is no branch gh can target"
+        );
+        assert!(!worker_guidance(None).contains("gh pr create"));
+    }
     use crate::hooks::HookEnv;
     use crate::store::Store;
     use nebula_core::{Agent, AgentStatus, Project, ProjectId, Worktree, WorktreeId};
