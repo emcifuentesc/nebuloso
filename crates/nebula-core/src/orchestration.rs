@@ -1,0 +1,601 @@
+//! The `orchestration` settings key: the ROSTER of harnesses a lead may
+//! start as workers (`nebula spawn --role <key>`), and how many it may run
+//! at once.
+//!
+//! The key layers like no other setting. The first layer to set a `roster`
+//! — `config.json`, then `config.local.json`, then the project's
+//! `projects.<repo>.orchestration` — replaces the default roster; each
+//! layer after it replaces whole entries by key, and `null` removes one.
+//! Every other key is replaced, `null` putting back its default. Keys this
+//! build has no reader for are ignored, so a newer nebula's settings never
+//! break an older one.
+
+use crate::entities::AgentKind;
+use crate::harness::HarnessDescriptor;
+use serde::de::{IgnoredAny, MapAccess, Visitor};
+use serde::ser::SerializeMap;
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use serde_json::{Map, Value};
+use std::collections::BTreeMap;
+use std::ops::RangeInclusive;
+use std::path::Path;
+
+pub const DEFAULT_MAX_CHILDREN: usize = 8;
+pub const MAX_CHILDREN_RANGE: RangeInclusive<usize> = 1..=32;
+
+/// The harnesses the default roster offers, in its order, each only when
+/// its CLI is installed. Muse and Grok have no hooks, so a lead could never
+/// hear their turns end.
+pub const DEFAULT_ROSTER: [AgentKind; 5] = [
+    AgentKind::Claude,
+    AgentKind::Codex,
+    AgentKind::Cursor,
+    AgentKind::Pi,
+    AgentKind::OpenCode,
+];
+
+/// What a roster entry may be started to do.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Role {
+    Implement,
+    Review,
+}
+
+impl Role {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Role::Implement => "implement",
+            Role::Review => "review",
+        }
+    }
+}
+
+/// One roster entry: the harness a worker started with this role runs, and
+/// how. `kind` is a built-in, or [`AgentKind::Custom`] with the registry id
+/// in `custom_harness`, the way an agent row records its harness.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(from = "EntryFile", into = "EntryFile")]
+pub struct RosterEntry {
+    pub kind: AgentKind,
+    pub custom_harness: Option<String>,
+    pub model: Option<String>,
+    pub effort: Option<String>,
+    pub roles: Vec<Role>,
+    /// Launch the worker with its harness's `unattended_args`.
+    pub unattended: bool,
+}
+
+impl RosterEntry {
+    /// The harness id the entry names, as the settings file spells it.
+    pub fn harness_id(&self) -> &str {
+        match (&self.kind, &self.custom_harness) {
+            (AgentKind::Custom, Some(id)) => id,
+            (kind, _) => kind.as_str(),
+        }
+    }
+
+    /// Refuse a spawn that asks the entry `key` for a role it lacks.
+    pub fn check_role(&self, key: &str, role: Role) -> Result<(), String> {
+        if self.roles.contains(&role) {
+            Ok(())
+        } else {
+            Err(format!("role {key} cannot {}", role.as_str()))
+        }
+    }
+}
+
+/// A roster entry as the settings file and the wire spell it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct EntryFile {
+    kind: String,
+    #[serde(default)]
+    model: Option<String>,
+    #[serde(default)]
+    effort: Option<String>,
+    #[serde(default = "every_role")]
+    roles: Vec<Role>,
+    #[serde(default)]
+    unattended: bool,
+}
+
+fn every_role() -> Vec<Role> {
+    vec![Role::Implement, Role::Review]
+}
+
+impl From<EntryFile> for RosterEntry {
+    fn from(file: EntryFile) -> Self {
+        let (kind, custom_harness) = match AgentKind::parse(&file.kind) {
+            Some(kind) => (kind, None),
+            None => (AgentKind::Custom, Some(file.kind)),
+        };
+        Self {
+            kind,
+            custom_harness,
+            model: file.model,
+            effort: file.effort,
+            roles: file.roles,
+            unattended: file.unattended,
+        }
+    }
+}
+
+impl From<RosterEntry> for EntryFile {
+    fn from(entry: RosterEntry) -> Self {
+        Self {
+            kind: entry.harness_id().to_string(),
+            model: entry.model,
+            effort: entry.effort,
+            roles: entry.roles,
+            unattended: entry.unattended,
+        }
+    }
+}
+
+/// The roster's entries in the order the settings wrote them, a JSON object
+/// on the wire and in `nebula roster`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Roster(pub Vec<(String, RosterEntry)>);
+
+impl Roster {
+    pub fn get(&self, key: &str) -> Option<&RosterEntry> {
+        self.0
+            .iter()
+            .find(|(k, _)| k == key)
+            .map(|(_, entry)| entry)
+    }
+
+    pub fn keys(&self) -> impl Iterator<Item = &str> {
+        self.0.iter().map(|(k, _)| k.as_str())
+    }
+}
+
+impl Serialize for Roster {
+    fn serialize<S: Serializer>(&self, out: S) -> Result<S::Ok, S::Error> {
+        let mut map = out.serialize_map(Some(self.0.len()))?;
+        for (key, entry) in &self.0 {
+            map.serialize_entry(key, entry)?;
+        }
+        map.end()
+    }
+}
+
+impl<'de> Deserialize<'de> for Roster {
+    fn deserialize<D: Deserializer<'de>>(from: D) -> Result<Self, D::Error> {
+        struct Entries;
+        impl<'de> Visitor<'de> for Entries {
+            type Value = Roster;
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("a map of roster entries")
+            }
+            fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Roster, A::Error> {
+                let mut entries = Vec::new();
+                while let Some(entry) = map.next_entry()? {
+                    entries.push(entry);
+                }
+                Ok(Roster(entries))
+            }
+        }
+        from.deserialize_map(Entries)
+    }
+}
+
+/// The resolved `orchestration` key, what `nebula roster` prints.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Orchestration {
+    pub roster: Roster,
+    pub max_children: usize,
+}
+
+impl Default for Orchestration {
+    fn default() -> Self {
+        Self {
+            roster: Roster::default(),
+            max_children: DEFAULT_MAX_CHILDREN,
+        }
+    }
+}
+
+impl Orchestration {
+    /// Parse the layered `orchestration` value (`None` when no layer set
+    /// one). `order` is the roster keys in the order the files wrote them
+    /// ([`roster_order`]); `registry` names the harnesses an entry may run;
+    /// `installed` says whether a program resolves on PATH, which decides
+    /// the default roster.
+    pub fn resolve(
+        raw: Option<&Value>,
+        order: &[String],
+        registry: &[HarnessDescriptor],
+        installed: &dyn Fn(&str) -> bool,
+    ) -> Result<Self, String> {
+        let empty = Map::new();
+        let obj = match raw {
+            None | Some(Value::Null) => &empty,
+            Some(Value::Object(obj)) => obj,
+            Some(_) => return Err("orchestration: not an object".into()),
+        };
+        let max_children = match obj.get("max_children") {
+            None | Some(Value::Null) => DEFAULT_MAX_CHILDREN,
+            Some(value) => value
+                .as_u64()
+                .and_then(|n| usize::try_from(n).ok())
+                .filter(|n| MAX_CHILDREN_RANGE.contains(n))
+                .ok_or_else(|| {
+                    format!(
+                        "orchestration: max_children must be {} to {} (got {value})",
+                        MAX_CHILDREN_RANGE.start(),
+                        MAX_CHILDREN_RANGE.end()
+                    )
+                })?,
+        };
+        let roster = match obj.get("roster") {
+            None | Some(Value::Null) => default_roster(registry, installed),
+            Some(Value::Object(entries)) => {
+                let mut roster = entries
+                    .iter()
+                    .filter(|(_, value)| !value.is_null())
+                    .map(|(key, value)| Ok((key.clone(), parse_entry(key, value, registry)?)))
+                    .collect::<Result<Vec<_>, String>>()?;
+                roster.sort_by_key(|(key, _)| {
+                    order.iter().position(|k| k == key).unwrap_or(usize::MAX)
+                });
+                Roster(roster)
+            }
+            Some(_) => return Err("orchestration: roster is not an object".into()),
+        };
+        Ok(Self {
+            roster,
+            max_children,
+        })
+    }
+}
+
+fn parse_entry(
+    key: &str,
+    value: &Value,
+    registry: &[HarnessDescriptor],
+) -> Result<RosterEntry, String> {
+    let file: EntryFile = serde_json::from_value(value.clone())
+        .map_err(|err| format!("roster entry {key}: {err}"))?;
+    match AgentKind::parse(&file.kind) {
+        Some(AgentKind::Muse) => Err(format!(
+            "roster entry {key}: muse has no hooks; it cannot be a worker"
+        )),
+        Some(_) => Ok(file.into()),
+        None if registry.iter().any(|h| h.id == file.kind) => Ok(file.into()),
+        None => Err(format!("roster entry {key}: unknown kind {}", file.kind)),
+    }
+}
+
+fn default_roster(registry: &[HarnessDescriptor], installed: &dyn Fn(&str) -> bool) -> Roster {
+    Roster(
+        DEFAULT_ROSTER
+            .iter()
+            .filter_map(|kind| registry.iter().find(|h| h.id == kind.as_str()))
+            .filter(|h| h.enabled && installed(h.program.trim()))
+            .filter_map(|h| {
+                let kind = AgentKind::parse(&h.id)?;
+                Some((
+                    h.id.clone(),
+                    RosterEntry {
+                        kind,
+                        custom_harness: None,
+                        model: None,
+                        effort: None,
+                        roles: every_role(),
+                        unattended: false,
+                    },
+                ))
+            })
+            .collect(),
+    )
+}
+
+/// Lay `over` onto `base` by the module's rules: entries of a `roster`
+/// both hold are replaced by key (`null` removing one), every other key is
+/// replaced (`null` removing it). A `base` that is not an object reads as
+/// an empty one; an `over` that is not one replaces it whole.
+pub fn overlay(base: &mut Value, over: Value) {
+    let Value::Object(over) = over else {
+        *base = over;
+        return;
+    };
+    if !base.is_object() {
+        *base = Value::Object(Map::new());
+    }
+    let Value::Object(base) = base else {
+        unreachable!("made an object above")
+    };
+    for (key, value) in over {
+        if let (Some(Value::Object(roster)), Value::Object(entries)) =
+            (base.get_mut("roster").filter(|_| key == "roster"), &value)
+        {
+            for (entry, replacement) in entries {
+                if replacement.is_null() {
+                    roster.remove(entry);
+                } else {
+                    roster.insert(entry.clone(), replacement.clone());
+                }
+            }
+            continue;
+        }
+        if value.is_null() {
+            base.remove(&key);
+        } else {
+            base.insert(key, value);
+        }
+    }
+}
+
+/// The roster keys `files` write, in the order they write them: each
+/// file's top-level roster, then `project`'s, first mention winning. JSON
+/// objects lose their order once parsed, so this reads the text again; a
+/// file that is missing or reads otherwise than expected adds nothing.
+pub fn roster_order(files: &[&Path], project: &Path) -> Vec<String> {
+    let project = project.to_string_lossy();
+    let mut order: Vec<String> = Vec::new();
+    for path in files {
+        let Some(probe) = std::fs::read_to_string(path)
+            .ok()
+            .and_then(|raw| serde_json::from_str::<OrderProbe>(&raw).ok())
+        else {
+            continue;
+        };
+        let project_keys = probe
+            .projects
+            .get(project.as_ref())
+            .map(|p| p.orchestration.roster.0.clone())
+            .unwrap_or_default();
+        for key in probe.orchestration.roster.0.into_iter().chain(project_keys) {
+            if !order.contains(&key) {
+                order.push(key);
+            }
+        }
+    }
+    order
+}
+
+#[derive(Default, Deserialize)]
+#[serde(default)]
+struct OrderProbe {
+    orchestration: OrchestrationOrder,
+    projects: BTreeMap<String, ProjectOrder>,
+}
+
+#[derive(Default, Deserialize)]
+#[serde(default)]
+struct ProjectOrder {
+    orchestration: OrchestrationOrder,
+}
+
+#[derive(Default, Deserialize)]
+#[serde(default)]
+struct OrchestrationOrder {
+    roster: KeyOrder,
+}
+
+#[derive(Default)]
+struct KeyOrder(Vec<String>);
+
+impl<'de> Deserialize<'de> for KeyOrder {
+    fn deserialize<D: Deserializer<'de>>(from: D) -> Result<Self, D::Error> {
+        struct Keys;
+        impl<'de> Visitor<'de> for Keys {
+            type Value = KeyOrder;
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("a map")
+            }
+            fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<KeyOrder, A::Error> {
+                let mut keys = Vec::new();
+                while let Some((key, IgnoredAny)) = map.next_entry::<String, IgnoredAny>()? {
+                    keys.push(key);
+                }
+                Ok(KeyOrder(keys))
+            }
+            fn visit_unit<E>(self) -> Result<KeyOrder, E> {
+                Ok(KeyOrder::default())
+            }
+        }
+        from.deserialize_any(Keys)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn registry() -> Vec<HarnessDescriptor> {
+        crate::harness::registry(&BTreeMap::new(), &[])
+    }
+
+    fn resolve(raw: Value) -> Result<Orchestration, String> {
+        Orchestration::resolve(Some(&raw), &[], &registry(), &|_| true)
+    }
+
+    fn keys(orchestration: &Orchestration) -> Vec<&str> {
+        orchestration.roster.keys().collect()
+    }
+
+    #[test]
+    fn the_default_roster_is_every_installed_hooked_harness_in_order() {
+        let all = Orchestration::resolve(None, &[], &registry(), &|_| true).unwrap();
+        assert_eq!(keys(&all), ["claude", "codex", "cursor", "pi", "opencode"]);
+        assert_eq!(all.max_children, DEFAULT_MAX_CHILDREN);
+        let claude = all.roster.get("claude").unwrap();
+        assert_eq!(claude.roles, [Role::Implement, Role::Review]);
+        assert!(!claude.unattended);
+        assert_eq!(
+            (claude.model.as_deref(), claude.effort.as_deref()),
+            (None, None)
+        );
+
+        let some = Orchestration::resolve(None, &[], &registry(), &|program| {
+            matches!(program, "cursor-agent" | "pi")
+        })
+        .unwrap();
+        assert_eq!(
+            keys(&some),
+            ["cursor", "pi"],
+            "probed by program: cursor's is cursor-agent"
+        );
+        assert!(Orchestration::resolve(None, &[], &registry(), &|_| false)
+            .unwrap()
+            .roster
+            .0
+            .is_empty());
+    }
+
+    #[test]
+    fn a_configured_roster_replaces_the_default_and_keeps_the_written_order() {
+        let order = ["pi", "claude", "codex"].map(String::from);
+        let raw = json!({
+            "roster": {
+                "claude": { "kind": "claude", "model": "opus", "effort": "high", "unattended": true },
+                "codex": { "kind": "codex" },
+                "pi": { "kind": "pi", "roles": ["review"], "future": 1 },
+            },
+            "max_children": 3,
+            "cross_review": { "max_rounds": 3 },
+        });
+        let orchestration =
+            Orchestration::resolve(Some(&raw), &order, &registry(), &|_| true).unwrap();
+        assert_eq!(keys(&orchestration), ["pi", "claude", "codex"]);
+        assert_eq!(orchestration.max_children, 3);
+        let claude = orchestration.roster.get("claude").unwrap();
+        assert_eq!(claude.model.as_deref(), Some("opus"));
+        assert!(claude.unattended);
+        assert_eq!(
+            orchestration.roster.get("pi").unwrap().roles,
+            [Role::Review]
+        );
+        let wire: Orchestration =
+            rmp_serde::from_slice(&rmp_serde::to_vec(&orchestration).unwrap()).unwrap();
+        assert_eq!(wire, orchestration, "the order survives the wire");
+    }
+
+    #[test]
+    fn validation_names_the_entry_and_the_bound() {
+        let err = |raw: Value| resolve(raw).unwrap_err();
+        assert_eq!(
+            err(json!({"roster": {"x": {"kind": "nope"}}})),
+            "roster entry x: unknown kind nope"
+        );
+        assert_eq!(
+            err(json!({"roster": {"m": {"kind": "muse"}}})),
+            "roster entry m: muse has no hooks; it cannot be a worker"
+        );
+        assert!(
+            err(json!({"roster": {"r": {"kind": "claude", "roles": ["lead"]}}}))
+                .starts_with("roster entry r: ")
+        );
+        for bad in [json!(0), json!(33), json!("8"), json!(-1)] {
+            assert_eq!(
+                err(json!({ "max_children": bad })),
+                format!("orchestration: max_children must be 1 to 32 (got {bad})")
+            );
+        }
+        assert_eq!(
+            resolve(json!({"max_children": 32})).unwrap().max_children,
+            32
+        );
+    }
+
+    #[test]
+    fn a_custom_harness_in_the_registry_can_be_an_entry() {
+        let overrides = BTreeMap::from([(
+            "mine".to_string(),
+            serde_json::from_value(json!({"program": "mine", "hooks": "claude"})).unwrap(),
+        )]);
+        let registry = crate::harness::registry(&overrides, &[]);
+        let raw = json!({"roster": {"m": {"kind": "mine"}}});
+        let orchestration = Orchestration::resolve(Some(&raw), &[], &registry, &|_| true).unwrap();
+        let entry = orchestration.roster.get("m").unwrap();
+        assert_eq!(
+            (entry.kind, entry.custom_harness.as_deref()),
+            (AgentKind::Custom, Some("mine"))
+        );
+        assert_eq!(
+            serde_json::to_value(&orchestration).unwrap(),
+            json!({"roster": {"m": {"kind": "mine", "model": null, "effort": null,
+                "roles": ["implement", "review"], "unattended": false}}, "max_children": 8})
+        );
+    }
+
+    #[test]
+    fn a_role_check_names_the_entry_and_the_role() {
+        let entry = resolve(json!({"roster": {"pi": {"kind": "pi", "roles": ["review"]}}}))
+            .unwrap()
+            .roster
+            .get("pi")
+            .cloned()
+            .unwrap();
+        assert_eq!(
+            entry.check_role("pi", Role::Implement),
+            Err("role pi cannot implement".into())
+        );
+        assert_eq!(entry.check_role("pi", Role::Review), Ok(()));
+    }
+
+    #[test]
+    fn overlay_replaces_entries_by_key_and_null_deletes() {
+        let mut base = json!({
+            "roster": {
+                "claude": { "kind": "claude", "model": "opus", "unattended": true },
+                "codex": { "kind": "codex" },
+            },
+            "max_children": 4,
+        });
+        overlay(
+            &mut base,
+            json!({
+                "roster": { "claude": { "kind": "claude" }, "codex": null, "pi": { "kind": "pi" } },
+                "max_children": null,
+            }),
+        );
+        assert_eq!(
+            base,
+            json!({"roster": {"claude": {"kind": "claude"}, "pi": {"kind": "pi"}}}),
+            "a replaced entry loses the fields it no longer names"
+        );
+        overlay(&mut base, json!({"roster": null}));
+        assert_eq!(base, json!({}), "a null roster puts back the default");
+
+        let mut absent = Value::Null;
+        overlay(
+            &mut absent,
+            json!({"roster": {"pi": null, "codex": {"kind": "codex"}}}),
+        );
+        assert_eq!(
+            keys(&Orchestration::resolve(Some(&absent), &[], &registry(), &|_| true).unwrap()),
+            ["codex"],
+            "a first roster's nulls name nothing"
+        );
+    }
+
+    #[test]
+    fn roster_order_follows_the_files_then_the_project() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join("config.json");
+        let local = dir.path().join("config.local.json");
+        std::fs::write(
+            &config,
+            r#"{"orchestration": {"roster": {"pi": {}, "codex": {}}},
+                "projects": {"/repo": {"orchestration": {"roster": {"zed": {}, "pi": null}}}}}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            &local,
+            r#"{"orchestration": {"roster": {"claude": {}, "codex": null}}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            roster_order(&[&config, &local], Path::new("/repo")),
+            ["pi", "codex", "zed", "claude"]
+        );
+        assert_eq!(
+            roster_order(&[&dir.path().join("missing.json"), &local], Path::new("/x")),
+            ["claude", "codex"]
+        );
+    }
+}

@@ -49,12 +49,25 @@ pub const DEFAULT_SESSION_IDLE_TIMEOUT: &str = "5m";
 pub fn load<T: DeserializeOwned + Default>(config: &Path, local: &Path) -> Loaded<T> {
     let mut problems = Vec::new();
     let mut merged = read_layer(config, &mut problems);
-    merged.extend(read_layer(local, &mut problems));
+    overlay(&mut merged, read_layer(local, &mut problems));
     let (value, skipped) = parse_lenient(&merged);
     Loaded {
         value,
         skipped,
         problems,
+    }
+}
+
+/// `layer`'s keys over `merged`'s: each replaces its key, except
+/// `orchestration`, which merges by [`crate::orchestration::overlay`].
+fn overlay(merged: &mut Object, layer: Object) {
+    for (key, value) in layer {
+        match merged.get_mut(&key) {
+            Some(base) if key == "orchestration" => crate::orchestration::overlay(base, value),
+            _ => {
+                merged.insert(key, value);
+            }
+        }
     }
 }
 
@@ -301,6 +314,34 @@ mod tests {
             }
         );
         assert!(loaded.skipped.is_empty() && loaded.problems.is_empty());
+    }
+
+    #[test]
+    fn the_local_layer_merges_orchestration_roster_entries_by_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let (config, local) = (
+            dir.path().join("config.json"),
+            dir.path().join("config.local.json"),
+        );
+        std::fs::write(
+            &config,
+            r#"{"orchestration": {"roster": {"claude": {"kind": "claude"}, "pi": {"kind": "pi"}},
+                "max_children": 4}}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            &local,
+            r#"{"orchestration": {"roster": {"pi": null, "codex": {"kind": "codex"}}}}"#,
+        )
+        .unwrap();
+        let loaded = load::<Object>(&config, &local);
+        assert_eq!(
+            loaded.value["orchestration"],
+            serde_json::json!({
+                "roster": {"claude": {"kind": "claude"}, "codex": {"kind": "codex"}},
+                "max_children": 4,
+            })
+        );
     }
 
     #[test]
