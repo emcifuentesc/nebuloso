@@ -127,8 +127,11 @@ fn hook_command(endpoint: &str, event: &str) -> String {
     // Claude Code (and Codex, same dialect) add a hook's stdout to the
     // model's context, which is how the session auto-title instruction
     // reaches the agent. The daemon keeps that body empty except when an
-    // instruction is due. Every other event stays fully silent.
-    let silence = if event == "UserPromptSubmit" {
+    // instruction is due. Claude's Stop passes it too, for the GOAL gate's
+    // block decision, empty otherwise; Codex's Stop has never been seen to
+    // honor one. Every other event stays fully silent.
+    let passes_stdout = event == "UserPromptSubmit" || (endpoint == "claude" && event == "Stop");
+    let silence = if passes_stdout {
         "2>/dev/null"
     } else {
         ">/dev/null 2>&1"
@@ -512,6 +515,14 @@ mod tests {
              >/dev/null 2>&1 || true"
         );
         assert_eq!(
+            hook_command("claude", "Stop"),
+            "if [ -z \"$NEBULA_AGENT_ID\" ] || [ -z \"$NEBULA_API_URL\" ]; then exit 0; fi; \
+             curl -sS -m 3 -X POST -H \"Authorization: Bearer $NEBULA_API_TOKEN\" \
+             -H \"Content-Type: application/json\" --data-binary @- \
+             \"$NEBULA_API_URL/api/hooks/claude?agentId=$NEBULA_AGENT_ID&hookEvent=Stop\" \
+             2>/dev/null || true"
+        );
+        assert_eq!(
             cursor_hook_command("Stop"),
             "if [ -z \"$NEBULA_AGENT_ID\" ] || [ -z \"$NEBULA_API_URL\" ]; then \
              printf '{\"continue\": true}\\n'; exit 0; fi; \
@@ -589,10 +600,11 @@ mod tests {
     }
 
     #[test]
-    fn user_prompt_submit_command_pipes_response_to_stdout() {
+    fn user_prompt_submit_and_stop_commands_pipe_response_to_stdout() {
         // The daemon's UserPromptSubmit response body is the auto-title
-        // context injection — that one command must let stdout through
-        // (stderr still silenced); every other event stays fully silent.
+        // context injection, and its Stop body the GOAL gate's block — those
+        // commands must let stdout through (stderr still silenced); every
+        // other event stays fully silent.
         let tmp = tempfile::tempdir().unwrap();
         install_claude_hooks(tmp.path()).unwrap();
         let settings = read_settings(tmp.path());
@@ -608,9 +620,13 @@ mod tests {
             .as_str()
             .unwrap();
         assert!(
-            stop.contains(">/dev/null 2>&1"),
-            "stop stays silent: {stop}"
+            stop.ends_with("hookEvent=Stop\" 2>/dev/null || true"),
+            "Claude's Stop passes the goal gate's reply through: {stop}"
         );
+        let silent = settings["hooks"]["PostToolUse"][0]["hooks"][0]["command"]
+            .as_str()
+            .unwrap();
+        assert!(silent.contains(">/dev/null 2>&1"), "stays silent: {silent}");
     }
 
     #[test]
@@ -672,6 +688,13 @@ mod tests {
             .as_str()
             .unwrap();
         assert!(!submit.contains(">/dev/null 2>&1"), "stdout: {submit}");
+        let stop = hooks["hooks"]["Stop"][0]["hooks"][0]["command"]
+            .as_str()
+            .unwrap();
+        assert!(
+            stop.contains(">/dev/null 2>&1"),
+            "only Claude's Stop passes stdout: {stop}"
+        );
     }
 
     #[test]

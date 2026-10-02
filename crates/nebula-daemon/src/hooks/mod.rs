@@ -16,6 +16,8 @@
 //! the CLI: its `hookSpecificOutput` carries the AUTO-TITLE instruction
 //! while a session is untitled, and a `sessionTitle` whenever the row's
 //! name is not the one Claude holds (CLAUDE TITLE SYNC, `session_title.rs`).
+//! The Claude `Stop` reply is the other: empty, except for the block
+//! decision that sends an orchestrator with an open GOAL back to work.
 
 pub mod installer;
 pub mod opencode_plugin;
@@ -28,6 +30,7 @@ use axum::extract::{Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::routing::post;
 use axum::Router;
+use nebula_core::orchestration::{Goal, StopVerdict};
 use nebula_core::AgentId;
 use serde::Deserialize;
 use std::sync::Arc;
@@ -71,6 +74,17 @@ pub fn user_prompt_reply(instruction: bool, session_title: Option<&str>) -> Stri
         output.insert("sessionTitle".into(), title.into());
     }
     serde_json::json!({ "hookSpecificOutput": output }).to_string()
+}
+
+/// The Claude Stop reply that sends an orchestrator back to work on its
+/// open GOAL, as block number `iteration`.
+pub fn goal_block_reply(goal: &Goal, iteration: u32) -> String {
+    let reason = format!(
+        "Goal not met: {}. Iteration {iteration}/{}. Continue, or run nebula goal \
+         done/unachievable.",
+        goal.condition, goal.max_iterations
+    );
+    serde_json::json!({ "decision": "block", "reason": reason }).to_string()
 }
 
 /// Diagnostic bodies for the route whose responses a hook discards. Never
@@ -344,10 +358,14 @@ async fn receive_hook(
     headers: HeaderMap,
     body: String,
 ) -> (StatusCode, String) {
-    // On this path the response body reaches the model's context, so every
-    // outcome (auth failure included) must answer with empty-or-instruction.
-    let injectable =
-        cli.dialect() == HookDialect::Injectable && query.hook_event == "UserPromptSubmit";
+    // Claude's Stop hook pipes this body to stdout too: there it is the
+    // GOAL gate's block decision, and must be empty on every other outcome.
+    let goal_gate = cli == HookCli::Claude && query.hook_event == "Stop";
+    // On these paths the response body reaches the model's context, so
+    // every outcome (auth failure included) must answer with empty or the
+    // one reply the path exists for.
+    let injectable = goal_gate
+        || (cli.dialect() == HookDialect::Injectable && query.hook_event == "UserPromptSubmit");
     let quiet_or = |status: StatusCode, diag: &str| {
         let body = if injectable {
             String::new()
@@ -368,12 +386,23 @@ async fn receive_hook(
     }
 
     // Parse failures still 200 — never fault a hook.
-    let payload: HookPayload = serde_json::from_str(&body).unwrap_or_default();
+    let parsed: Option<HookPayload> = serde_json::from_str(&body).ok();
+    let well_formed = parsed.is_some();
+    let payload = parsed.unwrap_or_default();
     let Some(event) = parse_event(&query.hook_event, &payload) else {
         return quiet_or(StatusCode::OK, HOOK_NOT_OK);
     };
     let agent_id = AgentId(query.agent_id.clone());
     tracing::debug!(agent = %agent_id, event = ?event, "hook received");
+    // An open GOAL sends the Stop back to work: the turn goes on, so the
+    // status machine never hears of it. Store errors let the Stop through.
+    if goal_gate && well_formed {
+        if let Ok(Some((goal, StopVerdict::Block { iteration }))) =
+            state.store.goal_on_stop(&agent_id)
+        {
+            return (StatusCode::OK, goal_block_reply(&goal, iteration));
+        }
+    }
     // A subagent's tool traffic reports the payload's cwd too, but that is
     // the Task's position, not the session's — an isolated subagent working
     // in a scratch checkout must never drag the row out from under the
@@ -408,6 +437,9 @@ async fn receive_hook(
         })
         .await;
 
+    if goal_gate {
+        return (StatusCode::OK, String::new());
+    }
     if injectable {
         // Prompt submitted on a still-untitled session: hand the CLI the
         // titling instruction. Unknown ids (prewarm, stale env) and store
@@ -445,6 +477,7 @@ async fn receive_hook(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use nebula_core::orchestration::GoalState;
     use nebula_core::{Agent, AgentKind, AgentStatus, Project, ProjectId, Worktree, WorktreeId};
 
     /// Minimal raw HTTP/1.1 POST (Connection: close), so the real response
@@ -586,7 +619,7 @@ mod tests {
         // every hook) but keep the diagnostic body.
         let (_, body) = http_post(
             env.port,
-            "/api/hooks/claude?agentId=named&hookEvent=Stop",
+            "/api/hooks/claude?agentId=named&hookEvent=SubagentStop",
             &env.token,
             payload,
         )
@@ -682,7 +715,7 @@ mod tests {
         // Other events keep their diagnostic body (discarded by the hooks).
         let (_, body) = http_post(
             env.port,
-            "/api/hooks/claude?agentId=pending&hookEvent=Stop",
+            "/api/hooks/codex?agentId=pending&hookEvent=Stop",
             &env.token,
             payload,
         )
@@ -709,6 +742,96 @@ mod tests {
         )
         .await;
         assert_eq!((status, body.as_str()), (401, ""));
+    }
+
+    /// Claude's Stop body reaches the CLI's stdout: an orchestrator's open
+    /// GOAL blocks Stops 1 to max with the exact decision JSON, the next
+    /// exhausts it and passes, and every other outcome is an empty body —
+    /// what a non-goal session's silenced Stop always printed.
+    #[tokio::test]
+    async fn claude_stop_blocks_on_an_open_goal_and_is_otherwise_empty() {
+        let store = seeded_store();
+        let titled = store.get_agent(&AgentId("titled".into())).unwrap().unwrap();
+        let goal = Goal {
+            condition: "cargo test passes".into(),
+            state: GoalState::Open,
+            iterations: 0,
+            max_iterations: 2,
+            evidence: None,
+        };
+        store
+            .insert_agent(&Agent {
+                id: AgentId("brain".into()),
+                orchestrator: true,
+                goal: Some(goal),
+                ..titled.clone()
+            })
+            .unwrap();
+        store
+            .insert_agent(&Agent {
+                id: AgentId("plain-brain".into()),
+                orchestrator: true,
+                ..titled
+            })
+            .unwrap();
+        let (env, mut rx) = start_hook_server(store.clone()).await.unwrap();
+        let stop =
+            |agent: &str, route: &str| format!("/api/hooks/{route}?agentId={agent}&hookEvent=Stop");
+        let payload = r#"{"session_id":"s1"}"#;
+
+        for agent in ["titled", "plain-brain", "ghost"] {
+            let (status, body) =
+                http_post(env.port, &stop(agent, "claude"), &env.token, payload).await;
+            assert_eq!((status, body.as_str()), (200, ""), "{agent}");
+            assert_eq!(rx.recv().await.unwrap().event, HookEvent::Stop);
+        }
+        let (status, body) =
+            http_post(env.port, &stop("brain", "claude"), "wrong-token", payload).await;
+        assert_eq!((status, body.as_str()), (401, ""), "auth failure");
+        let (status, body) =
+            http_post(env.port, &stop("brain", "claude"), &env.token, "{not json").await;
+        assert_eq!((status, body.as_str()), (200, ""), "malformed payload");
+        rx.recv().await.unwrap();
+        for route in ["pi", "codex"] {
+            let (_, body) = http_post(env.port, &stop("brain", route), &env.token, payload).await;
+            assert_ne!(body, "", "{route} never blocks");
+            assert!(!body.contains("block"), "{route}: {body}");
+            rx.recv().await.unwrap();
+        }
+
+        for n in 1..=2 {
+            let (status, body) =
+                http_post(env.port, &stop("brain", "claude"), &env.token, payload).await;
+            assert_eq!(status, 200);
+            assert_eq!(
+                body,
+                format!(
+                    "{{\"decision\":\"block\",\"reason\":\"Goal not met: cargo test passes. \
+                     Iteration {n}/2. Continue, or run nebula goal done/unachievable.\"}}"
+                )
+            );
+            let goal = store
+                .get_agent(&AgentId("brain".into()))
+                .unwrap()
+                .unwrap()
+                .goal;
+            assert_eq!(
+                goal.map(|g| (g.state, g.iterations)),
+                Some((GoalState::Open, n))
+            );
+        }
+        assert!(rx.try_recv().is_err(), "a blocked Stop never ends the turn");
+        let (_, body) = http_post(env.port, &stop("brain", "claude"), &env.token, payload).await;
+        assert_eq!(body, "", "Stop max + 1 passes");
+        assert_eq!(rx.recv().await.unwrap().event, HookEvent::Stop);
+        let goal = store
+            .get_agent(&AgentId("brain".into()))
+            .unwrap()
+            .unwrap()
+            .goal;
+        assert_eq!(goal.map(|g| g.state), Some(GoalState::Exhausted));
+        let (_, body) = http_post(env.port, &stop("brain", "claude"), &env.token, payload).await;
+        assert_eq!(body, "", "an exhausted goal stays out of the way");
     }
 
     #[tokio::test]

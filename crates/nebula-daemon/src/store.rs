@@ -5,12 +5,12 @@
 use crate::session_title::TitleState;
 use anyhow::{Context, Result};
 use nebula_core::clock::now_ms;
-use nebula_core::orchestration::{Goal, GoalState, Role};
+use nebula_core::orchestration::{Goal, GoalEvent, GoalState, Role, StopVerdict, NO_OPEN_GOAL};
 use nebula_core::{
     Agent, AgentId, AgentKind, AgentStatus, Link, LinkId, PrSeen, Project, ProjectId, PromptEntry,
     TerminalId, TerminalTab, Worktree, WorktreeId, RECENT_PROMPTS_KEPT,
 };
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
@@ -615,6 +615,54 @@ impl Store {
         Ok(())
     }
 
+    /// A Claude Stop from `id`, judged by its GOAL (None without one): a
+    /// block's iteration, or the exhaustion, is persisted before this
+    /// returns, under the one lock that read the goal.
+    pub fn goal_on_stop(&self, id: &AgentId) -> Result<Option<(Goal, StopVerdict)>> {
+        let conn = self.conn.lock().unwrap();
+        let Some(goal) = agent_goal(&conn, id)? else {
+            return Ok(None);
+        };
+        let verdict = goal.on_stop();
+        match verdict {
+            StopVerdict::Block { iteration } => {
+                conn.execute(
+                    "UPDATE agents SET goal_iterations = ?2 WHERE id = ?1",
+                    params![id.as_str(), iteration],
+                )?;
+            }
+            StopVerdict::Exhaust => {
+                let state = goal.state.next(GoalEvent::BlockAtLimit);
+                conn.execute(
+                    "UPDATE agents SET goal_state = ?2 WHERE id = ?1",
+                    params![id.as_str(), state.map_err(anyhow::Error::msg)?.as_str()],
+                )?;
+            }
+            StopVerdict::Pass => {}
+        }
+        Ok(Some((goal, verdict)))
+    }
+
+    /// Move `id`'s GOAL by `event`, keeping `evidence` beside it when one
+    /// is given. Refused, changing nothing, with [`NO_OPEN_GOAL`] when the
+    /// row has no goal or `event` does not apply to its state.
+    pub fn apply_goal_event(
+        &self,
+        id: &AgentId,
+        event: GoalEvent,
+        evidence: Option<&str>,
+    ) -> Result<GoalState> {
+        let conn = self.conn.lock().unwrap();
+        let goal = agent_goal(&conn, id)?.context(NO_OPEN_GOAL)?;
+        let state = goal.state.next(event).map_err(anyhow::Error::msg)?;
+        conn.execute(
+            "UPDATE agents SET goal_state = ?2, goal_evidence = COALESCE(?3, goal_evidence)
+             WHERE id = ?1",
+            params![id.as_str(), state.as_str(), evidence],
+        )?;
+        Ok(state)
+    }
+
     /// A `nebula send` reached the worker at `at`.
     pub fn set_agent_last_send_at(&self, id: &AgentId, at: i64) -> Result<()> {
         self.conn.lock().unwrap().execute(
@@ -1196,6 +1244,18 @@ fn row_to_agent(r: &rusqlite::Row) -> rusqlite::Result<Agent> {
         orchestrator: r.get::<_, i64>(21)? != 0,
         goal: row_to_goal(r, 22)?,
     })
+}
+
+fn agent_goal(conn: &Connection, id: &AgentId) -> Result<Option<Goal>> {
+    let goal = conn
+        .query_row(
+            "SELECT goal, goal_state, goal_iterations, goal_max_iterations, goal_evidence
+             FROM agents WHERE id = ?1",
+            params![id.as_str()],
+            |r| row_to_goal(r, 0),
+        )
+        .optional()?;
+    Ok(goal.flatten())
 }
 
 /// The five `goal*` columns from `at` on: None without a condition or with
