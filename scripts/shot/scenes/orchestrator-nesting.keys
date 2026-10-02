@@ -1,0 +1,18 @@
+# One quick prompt in the root checkout launches the orchestrator; the stand-in spawns its three workers
+# (orchestrator-nesting.setup.sh). The F12s (unbound) wait out the three worktree cuts and the workers'
+# hooks, then Escape leaves the cards with the cursor on the orchestrator.
+p
+Split the auth fixes across three workers
+Enter
+F12
+F12
+F12
+F12
+F12
+F12
+F12
+F12
+F12
+F12
+F12
+F12

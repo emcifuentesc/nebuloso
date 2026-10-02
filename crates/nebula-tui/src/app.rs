@@ -4809,14 +4809,17 @@ impl App {
         let agents = self.sessions_in(wt);
         let (active, _) = self.group_counts_in(wt);
         let active = active.min(agents.len());
-        let mut rows: Vec<SessionRow> = agents[..active]
-            .iter()
-            .cloned()
-            .map(SessionRow::Agent)
-            .collect();
+        // The grid's band for this checkout draws the same nesting
+        // (`launcher::bands`), so `sel_session` walks the cards in order.
+        let nested = |agents: &[Agent]| {
+            crate::nesting::nest(agents, &self.tree.agents)
+                .into_iter()
+                .map(|(a, _)| SessionRow::Agent(a))
+        };
+        let mut rows: Vec<SessionRow> = nested(&agents[..active]).collect();
         rows.extend(self.terminals_in(wt).into_iter().map(SessionRow::Terminal));
         rows.extend(self.links_in(wt).into_iter().map(SessionRow::Link));
-        rows.extend(agents[active..].iter().cloned().map(SessionRow::Agent));
+        rows.extend(nested(&agents[active..]));
         rows
     }
 

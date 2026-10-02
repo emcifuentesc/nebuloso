@@ -387,6 +387,47 @@ pub(super) fn select_card(app: &mut App, sref: SessionRef, out: &mut Vec<ClientR
     }
 }
 
+/// [`select_card`] for the card at `card` along `band`. A WORKER nested
+/// under its orchestrator (`crate::nesting`) runs in another checkout,
+/// and the jump to its session would carry the cursor off to that
+/// checkout's band; this lands on the row the band's own list has for it.
+fn select_card_on(app: &mut App, band: &view::Band, card: usize, out: &mut Vec<ClientRequest>) {
+    let Some(c) = band.cards.get(card) else {
+        return;
+    };
+    match c {
+        view::Card::Session(row) if row.agent.worktree_id != band.worktree => {
+            select_nested(app, &band.worktree, row.agent.id.clone(), out)
+        }
+        _ => select_card(app, c.sref(), out),
+    }
+}
+
+/// The cursor onto worker `id`'s row in `worktree`'s list, under its
+/// orchestrator — [`select_terminal`]'s landing, for a session listed
+/// away from its own checkout.
+fn select_nested(app: &mut App, worktree: &WorktreeId, id: AgentId, out: &mut Vec<ClientRequest>) {
+    if app.follow_up.as_ref().is_some_and(|f| f.agent != id) {
+        app.follow_up = None;
+    }
+    take_aim(app);
+    let Some(wt_index) = app.worktree_row_of(worktree) else {
+        return select(app, id, out);
+    };
+    app.sel_worktree = wt_index;
+    let Some(index) = app
+        .visible_session_rows()
+        .iter()
+        .position(|r| matches!(r, SessionRow::Agent(a) if a.id == id))
+    else {
+        return select(app, id, out);
+    };
+    app.sel_session = index;
+    app.focus = Focus::Sessions;
+    app.dirty = true;
+    super::preview_selected(app, out);
+}
+
 /// What Tab says on a LIST band that already lists every entry it has.
 const ALL_LISTED: &str = "every session in this worktree is already listed";
 
@@ -552,7 +593,7 @@ pub(super) fn walk_terminals(app: &mut App, out: &mut Vec<ClientRequest>) {
         Some(p) => terminals[(p + 1) % terminals.len()],
         None => terminals[0],
     };
-    select_card(app, cards[next].sref(), out);
+    select_card_on(app, &bands[band], next, out);
 }
 
 /// `h` / `l` (`←` / `→`) along a collapsed band: the cursor one card
@@ -586,7 +627,7 @@ pub(super) fn walk_band(app: &mut App, dx: i64, out: &mut Vec<ClientRequest>) {
         take_aim(app);
         return;
     }
-    select_card(app, cards[next].sref(), out);
+    select_card_on(app, &bands[band], next, out);
 }
 
 /// A click on the `❮` / `❯` beside a band's row: the cursor onto that
@@ -1035,8 +1076,7 @@ pub(super) fn step_grid(app: &mut App, dx: i64, dy: i64, out: &mut Vec<ClientReq
         // `j`/`k` go straight on to the band above or below it.
         let next = layout.stepped(at, dx, dy);
         if let Some(next) = next.filter(|&next| Some(next) != at) {
-            let sref = bands[band].cards[next].sref();
-            select_card(app, sref, out);
+            select_card_on(app, &bands[band], next, out);
             return;
         }
         if dy == 0 {
@@ -1074,7 +1114,7 @@ pub(super) fn step_grid(app: &mut App, dx: i64, dy: i64, out: &mut Vec<ClientReq
             entries.last()
         };
         if let Some(&card) = edge.and_then(|row| row.get(col).or(row.last())) {
-            select_card(app, bands[next].cards[card].sref(), out);
+            select_card_on(app, &bands[next], card, out);
             return;
         }
     }
@@ -1083,9 +1123,10 @@ pub(super) fn step_grid(app: &mut App, dx: i64, dy: i64, out: &mut Vec<ClientReq
         // on a row the grid has no card for: its first card, as `h`/`l`
         // take it. An EMPTY BAND has none: the cursor is on all of it.
         if view::card_cursor(app, &bands[next]).is_none() {
-            match bands[next].cards.first() {
-                Some(first) => select_card(app, first.sref(), out),
-                None => take_aim(app),
+            if bands[next].cards.is_empty() {
+                take_aim(app);
+            } else {
+                select_card_on(app, &bands[next], 0, out);
             }
             return;
         }
@@ -1820,7 +1861,7 @@ fn point_at(app: &mut App, at: CardRef, out: &mut Vec<ClientRequest>) -> Option<
     if app.launcher_pane_hidden {
         toggle_pane(app);
     }
-    select_card(app, sref.clone(), out);
+    select_card_on(app, &bands[at.band], at.card, out);
     Some(sref)
 }
 
@@ -1932,13 +1973,12 @@ pub(super) fn keep_cursor(app: &mut App, before: CursorCard, out: &mut Vec<Clien
     let next = at(&before.after)
         .or_else(|| at(&before.before))
         .unwrap_or_else(|| before.index.min(band.cards.len() - 1));
-    let next_sref = band.cards[next].sref();
     tracing::debug!(
         was_at = before.index,
         lands_on = %band.cards[next].name(),
         "launcher grid: the cursor's card left the band"
     );
-    select_card(app, next_sref, out);
+    select_card_on(app, band, next, out);
 }
 
 /// Enter anywhere on the GRID (or a double-click on a card): the
@@ -9969,6 +10009,75 @@ mod tests {
             .iter()
             .position(|i| app.tree.projects[*i].id.0 == id)
             .expect("the project has a row")
+    }
+
+    // ---- ORCHESTRATOR NESTING ----
+
+    /// A WORKER is two cards: one under its orchestrator in the root's
+    /// band, one in its own checkout's. Walking onto the nested one keeps
+    /// the cursor on the band it walked, and Enter on either attaches the
+    /// worker itself.
+    #[test]
+    fn both_cards_of_a_worker_select_and_attach_the_worker() {
+        with_default_config(|| {
+            let mut app = two_sessions();
+            app.tree
+                .agents
+                .iter_mut()
+                .find(|a| a.id.0 == "a2")
+                .unwrap()
+                .parent_agent_id = Some(AgentId("a1".into()));
+            let bands = crate::launcher::bands(&app);
+            let names = |b: &crate::launcher::Band| {
+                b.cards
+                    .iter()
+                    .map(|c| c.name().to_string())
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(names(&bands[0]), ["agent-1", "polish-nav"]);
+            assert_eq!(names(&bands[1]), ["polish-nav"]);
+            let attached = |app: &App, out: &[ClientRequest]| {
+                let a2 = SessionRef::Agent(AgentId("a2".into()));
+                out.iter()
+                    .any(|r| matches!(r, ClientRequest::Attach { session, .. } if *session == a2))
+                    || app.pending_attach.as_ref().is_some_and(|(s, _)| *s == a2)
+                    || app.term.as_ref().is_some_and(|t| t.sref == a2)
+            };
+
+            super::select_card(&mut app, bands[0].cards[0].sref(), &mut Vec::new());
+            draw(&mut app);
+            let mut out = key(&mut app, KeyCode::Char('l'), KeyModifiers::NONE);
+            let bands = crate::launcher::bands(&app);
+            assert_eq!(app.selected_session().unwrap().id.0, "a2");
+            assert_eq!(
+                crate::launcher::cursor(&app, &bands),
+                Some(CardRef { band: 0, card: 1 }),
+                "still on the root's band"
+            );
+            out.extend(key(&mut app, KeyCode::Enter, KeyModifiers::NONE));
+            assert!(attached(&app, &out), "the nested card attaches a2");
+
+            let mut app = two_sessions();
+            app.tree
+                .agents
+                .iter_mut()
+                .find(|a| a.id.0 == "a2")
+                .unwrap()
+                .parent_agent_id = Some(AgentId("a1".into()));
+            draw(&mut app);
+            let mut out = Vec::new();
+            assert!(super::select_card_row(
+                &mut app,
+                CardRef { band: 1, card: 0 },
+                &mut out
+            ));
+            assert_eq!(
+                crate::launcher::cursor(&app, &crate::launcher::bands(&app)),
+                Some(CardRef { band: 1, card: 0 })
+            );
+            out.extend(key(&mut app, KeyCode::Enter, KeyModifiers::NONE));
+            assert!(attached(&app, &out), "its own checkout's card attaches a2");
+        });
     }
 
     // ---- the compact LIST ----
