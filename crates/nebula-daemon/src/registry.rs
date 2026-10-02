@@ -101,6 +101,10 @@ pub(crate) struct CreateAgentSpec {
     /// launches it unattended.
     pub role: Option<String>,
     pub unattended: bool,
+    /// What the worker was started to do; None for a session that is not one.
+    pub purpose: Option<nebula_core::orchestration::Role>,
+    /// Launch an ORCHESTRATOR (see [`crate::orchestration`]).
+    pub orchestrator: bool,
 }
 
 /// A pre-spawned agent CLI waiting to be adopted by the next CreateAgent for
@@ -1053,6 +1057,8 @@ impl Daemon {
             parent_agent_id,
             role,
             unattended,
+            purpose,
+            orchestrator,
         } = spec;
         let cloud_prompt = match cloud_prompt {
             Some(_) if kind != AgentKind::Claude => {
@@ -1160,6 +1166,8 @@ impl Daemon {
             parent_agent_id,
             role,
             unattended,
+            purpose,
+            orchestrator,
         };
         self.store.insert_agent_with_launch_context(
             &agent,
@@ -1334,6 +1342,8 @@ impl Daemon {
             parent_agent_id: None,
             role: None,
             unattended: false,
+            purpose: None,
+            orchestrator: false,
         };
         self.spawn_agent_session(&agent, &worktree, DEFAULT_COLS, DEFAULT_ROWS)?;
         tracing::info!(agent = %agent.id, kind = kind.as_str(), worktree = %worktree.branch, "prewarmed agent session");
@@ -5101,6 +5111,8 @@ mod tests {
                 parent_agent_id: None,
                 role: None,
                 unattended: false,
+                purpose: None,
+                orchestrator: false,
             })
             .await
             .unwrap_err();
@@ -5122,6 +5134,8 @@ mod tests {
                 parent_agent_id: None,
                 role: None,
                 unattended: false,
+                purpose: None,
+                orchestrator: false,
             })
             .await
             .unwrap_err();
@@ -5143,6 +5157,8 @@ mod tests {
                 parent_agent_id: None,
                 role: None,
                 unattended: false,
+                purpose: None,
+                orchestrator: false,
             })
             .await
             .unwrap_err();
@@ -5164,6 +5180,8 @@ mod tests {
                 parent_agent_id: None,
                 role: None,
                 unattended: false,
+                purpose: None,
+                orchestrator: false,
             })
             .await
             .unwrap_err();
@@ -5188,6 +5206,8 @@ mod tests {
             parent_agent_id: None,
             role: None,
             unattended: false,
+            purpose: None,
+            orchestrator: false,
         };
         for kind in AgentKind::ALL {
             if kind == AgentKind::Custom {
@@ -5355,6 +5375,8 @@ mod tests {
             parent_agent_id: None,
             role: None,
             unattended: false,
+            purpose: None,
+            orchestrator: false,
         };
         for kind in AgentKind::ALL {
             if kind == AgentKind::Custom {
@@ -5402,6 +5424,8 @@ mod tests {
             parent_agent_id: None,
             role: None,
             unattended: false,
+            purpose: None,
+            orchestrator: false,
         };
         // Validation runs before the worktree lookup, so an unknown
         // worktree is fine here and every failure is the prompt's own.
@@ -5513,6 +5537,8 @@ mod tests {
             parent_agent_id: None,
             role: None,
             unattended: false,
+            purpose: None,
+            orchestrator: false,
         };
 
         let created = |mut events: broadcast::Receiver<ServerEvent>| {
@@ -5648,6 +5674,8 @@ mod tests {
                 parent_agent_id: None,
                 role: None,
                 unattended: false,
+                purpose: None,
+                orchestrator: false,
             })
             .unwrap();
     }
@@ -5784,6 +5812,8 @@ mod tests {
                 parent_agent_id: None,
                 role: None,
                 unattended: false,
+                purpose: None,
+                orchestrator: false,
             })
             .await
             .unwrap()
@@ -5934,6 +5964,8 @@ mod tests {
                     parent_agent_id: None,
                     role: None,
                     unattended: false,
+                    purpose: None,
+                    orchestrator: false,
                 },
                 true,
             )

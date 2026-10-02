@@ -8420,6 +8420,7 @@ fn create_agent(app: &mut App, draft: AgentLaunchDraft, out: &mut Vec<ClientRequ
             cloud_prompt,
             starting_prompt,
             issue_url,
+            orchestrator: false,
         },
     });
     // The create consumes (or, off-spec, discards) the worktree's warm
@@ -10929,6 +10930,8 @@ mod tests {
                     parent_agent_id: None,
                     role: None,
                     unattended: false,
+                    purpose: None,
+                    orchestrator: false,
                 }),
             },
         );
@@ -10961,6 +10964,8 @@ mod tests {
                     parent_agent_id: None,
                     role: None,
                     unattended: false,
+                    purpose: None,
+                    orchestrator: false,
                 }),
             },
         );
@@ -11721,6 +11726,8 @@ mod tests {
                     parent_agent_id: None,
                     role: None,
                     unattended: false,
+                    purpose: None,
+                    orchestrator: false,
                 }),
             },
         );
@@ -15714,6 +15721,8 @@ diff --git a/src/c.rs b/src/c.rs
                     parent_agent_id: None,
                     role: None,
                     unattended: false,
+                    purpose: None,
+                    orchestrator: false,
                 }),
             }
         };
@@ -15772,6 +15781,8 @@ diff --git a/src/c.rs b/src/c.rs
                 parent_agent_id: None,
                 role: None,
                 unattended: false,
+                purpose: None,
+                orchestrator: false,
             }),
         };
         // A long-running turn outranks a more recent finish, because a
@@ -15857,6 +15868,8 @@ diff --git a/src/c.rs b/src/c.rs
                 parent_agent_id: None,
                 role: None,
                 unattended: false,
+                purpose: None,
+                orchestrator: false,
             }),
         };
         hse(
@@ -15920,6 +15933,8 @@ diff --git a/src/c.rs b/src/c.rs
                     parent_agent_id: None,
                     role: None,
                     unattended: false,
+                    purpose: None,
+                    orchestrator: false,
                 }),
             },
         );
@@ -15992,6 +16007,8 @@ diff --git a/src/c.rs b/src/c.rs
                     parent_agent_id: None,
                     role: None,
                     unattended: false,
+                    purpose: None,
+                    orchestrator: false,
                 }),
             },
         );
@@ -18199,6 +18216,8 @@ diff --git a/src/c.rs b/src/c.rs
                     parent_agent_id: None,
                     role: None,
                     unattended: false,
+                    purpose: None,
+                    orchestrator: false,
                 }),
             },
         );
@@ -18727,6 +18746,8 @@ diff --git a/src/c.rs b/src/c.rs
             parent_agent_id: None,
             role: None,
             unattended: false,
+            purpose: None,
+            orchestrator: false,
         })
     }
 
@@ -20218,6 +20239,8 @@ diff --git a/src/c.rs b/src/c.rs
             parent_agent_id: None,
             role: None,
             unattended: false,
+            purpose: None,
+            orchestrator: false,
         };
 
         // a1 is the selected session; its upsert lands under w2.
@@ -20412,6 +20435,8 @@ diff --git a/src/c.rs b/src/c.rs
             parent_agent_id: None,
             role: None,
             unattended: false,
+            purpose: None,
+            orchestrator: false,
         })
     }
 
@@ -22150,6 +22175,8 @@ diff --git a/src/c.rs b/src/c.rs
                     parent_agent_id: None,
                     role: None,
                     unattended: false,
+                    purpose: None,
+                    orchestrator: false,
                 }),
             },
         );
@@ -22178,6 +22205,8 @@ diff --git a/src/c.rs b/src/c.rs
                     parent_agent_id: None,
                     role: None,
                     unattended: false,
+                    purpose: None,
+                    orchestrator: false,
                 }),
             },
         );
@@ -22494,6 +22523,8 @@ diff --git a/src/c.rs b/src/c.rs
             parent_agent_id: None,
             role: None,
             unattended: false,
+            purpose: None,
+            orchestrator: false,
         };
         for a in [
             agent("ask", "w2", AgentStatus::NeedsFeedback, false),
@@ -22956,6 +22987,8 @@ diff --git a/src/c.rs b/src/c.rs
                     parent_agent_id: None,
                     role: None,
                     unattended: false,
+                    purpose: None,
+                    orchestrator: false,
                 }),
             },
         );
@@ -25174,6 +25207,8 @@ diff --git a/src/c.rs b/src/c.rs
                         parent_agent_id: None,
                         role: None,
                         unattended: false,
+                        purpose: None,
+                        orchestrator: false,
                     }),
                 },
             );
@@ -25251,6 +25286,8 @@ diff --git a/src/c.rs b/src/c.rs
             parent_agent_id: None,
             role: None,
             unattended: false,
+            purpose: None,
+            orchestrator: false,
         })
     }
 
@@ -25877,6 +25914,8 @@ diff --git a/src/c.rs b/src/c.rs
                     parent_agent_id: None,
                     role: None,
                     unattended: false,
+                    purpose: None,
+                    orchestrator: false,
                 }),
             },
         );
@@ -25947,6 +25986,8 @@ diff --git a/src/c.rs b/src/c.rs
                     parent_agent_id: None,
                     role: None,
                     unattended: false,
+                    purpose: None,
+                    orchestrator: false,
                 }),
             },
         );
@@ -26756,6 +26797,8 @@ diff --git a/src/c.rs b/src/c.rs
                         parent_agent_id: None,
                         role: None,
                         unattended: false,
+                        purpose: None,
+                        orchestrator: false,
                     }),
                 },
             );
@@ -28189,6 +28232,8 @@ diff --git a/src/c.rs b/src/c.rs
                         parent_agent_id: None,
                         role: None,
                         unattended: false,
+                        purpose: None,
+                        orchestrator: false,
                     }),
                 },
             );
@@ -30114,6 +30159,8 @@ diff --git a/src/c.rs b/src/c.rs
                     parent_agent_id: None,
                     role: None,
                     unattended: false,
+                    purpose: None,
+                    orchestrator: false,
                 }),
             },
         );

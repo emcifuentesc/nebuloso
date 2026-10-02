@@ -2527,6 +2527,8 @@ mod tests {
                     parent_agent_id: None,
                     role: None,
                     unattended: false,
+                    purpose: None,
+                    orchestrator: false,
                 }),
             },
         );
@@ -2570,6 +2572,8 @@ mod tests {
                     parent_agent_id: None,
                     role: None,
                     unattended: false,
+                    purpose: None,
+                    orchestrator: false,
                 }),
             },
         );
@@ -2626,6 +2630,8 @@ mod tests {
                     parent_agent_id: None,
                     role: None,
                     unattended: false,
+                    purpose: None,
+                    orchestrator: false,
                 }),
             },
         );
@@ -7738,6 +7744,8 @@ mod tests {
                         parent_agent_id: None,
                         role: None,
                         unattended: false,
+                        purpose: None,
+                        orchestrator: false,
                     }),
                 },
             );

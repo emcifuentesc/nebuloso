@@ -220,6 +220,8 @@ pub(super) fn stage_agent(
         parent_agent_id: None,
         role: None,
         unattended: false,
+        purpose: None,
+        orchestrator: false,
     });
     if let Some(i) = project.and_then(|id| {
         app.project_rows()
@@ -691,6 +693,8 @@ mod tests {
             parent_agent_id: None,
             role: None,
             unattended: false,
+            purpose: None,
+            orchestrator: false,
         }
     }
 

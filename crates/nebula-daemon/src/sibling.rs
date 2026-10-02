@@ -233,6 +233,8 @@ impl Daemon {
             parent_agent_id,
             role: role.map(|(key, _)| key.to_string()),
             unattended: role.is_some_and(|(_, entry)| entry.unattended),
+            purpose: child.map(|_| Role::Implement),
+            orchestrator: false,
         })
     }
 
@@ -364,6 +366,7 @@ impl Daemon {
                     name: agent.name,
                     kind: agent.kind,
                     role: agent.role,
+                    purpose: agent.purpose,
                     status: agent.status,
                     status_changed_at: agent.status_changed_at,
                     worktree: worktree.path,
@@ -544,6 +547,8 @@ mod tests {
             parent_agent_id: None,
             role: None,
             unattended: false,
+            purpose: None,
+            orchestrator: false,
         }
     }
 

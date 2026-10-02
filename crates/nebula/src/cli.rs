@@ -208,9 +208,10 @@ pub(crate) enum Command {
     ///
     /// Run from inside a nebula agent session that started workers with
     /// `nebula spawn --child`. Prints one JSON array, oldest worker first, of
-    /// {"id","name","kind","role","status","status_changed_at",
+    /// {"id","name","kind","role","purpose","status","status_changed_at",
     /// "awaiting_turn","worktree","branch"}; role is the `--role` it was
-    /// started with, or null;
+    /// started with, or null; purpose is "review" for a `--review` worker,
+    /// else "implement";
     /// an archived worker is left out, and no workers prints [].
     #[command(after_help = CHILDREN_EXAMPLES)]
     Children,

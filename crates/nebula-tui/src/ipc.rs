@@ -1028,6 +1028,7 @@ mod tests {
             name: "w".into(),
             kind: AgentKind::Claude,
             role: None,
+            purpose: None,
             status,
             status_changed_at: 0,
             awaiting_turn,

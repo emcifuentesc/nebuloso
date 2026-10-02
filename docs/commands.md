@@ -77,8 +77,9 @@ nebula roster             # the roster this session's workers start from, resolv
                           # entries in the order the settings list them; a setting that cannot be used is refused, naming
                           # the entry ("roster entry <key>: unknown kind <kind>")
 nebula children           # this session's unarchived workers as one JSON array, oldest first, of
-                          # {"id","name","kind","role","status","status_changed_at",
+                          # {"id","name","kind","role","purpose","status","status_changed_at",
                           # "awaiting_turn","worktree","branch"}; role is null without --role;
+                          # purpose is "review" for a --review worker, else "implement";
                           # [] when it has none
 nebula status <id>…       # the same array for these workers, in this order; an id that is not this
                           # session's worker is refused with "<id> is not your worker", nothing printed
