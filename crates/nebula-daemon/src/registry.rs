@@ -5270,7 +5270,7 @@ mod tests {
             let err = daemon.create_agent(spec(kind)).await.unwrap_err();
             assert_eq!(
                 err.to_string(),
-                "orchestrator needs a harness with a system prompt flag (claude, pi)"
+                "orchestrator needs a harness with a system prompt flag (claude, pi, grok)"
             );
         }
         for kind in [AgentKind::Claude, AgentKind::Pi] {

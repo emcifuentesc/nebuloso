@@ -217,7 +217,7 @@ pub(crate) fn open_kind_picker(app: &mut App, picker: KindPicker) {
 /// Shown instead of the orchestrator picker when no enabled harness has a
 /// system-prompt flag to carry an ORCHESTRATOR's guidance.
 pub(crate) const NO_ORCHESTRATOR_FLASH: &str =
-    "no enabled harness can orchestrate — it needs a system prompt flag (claude, pi)";
+    "no enabled harness can orchestrate — it needs a system prompt flag (claude, pi, grok)";
 
 /// "New orchestrator…": a picker of the enabled harnesses with a
 /// system-prompt flag, Enter on one launching an ORCHESTRATOR in

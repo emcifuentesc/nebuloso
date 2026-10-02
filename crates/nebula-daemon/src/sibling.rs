@@ -96,9 +96,9 @@ pub(crate) fn worker_guidance(base_ref: Option<&str>, purpose: Option<Role>) -> 
             branch => format!(" --base {branch}"),
         };
         text.push_str(&format!(
-            " Implementers: commit, `git push -u origin HEAD`, then `gh pr create \
-             --fill{base_flag}`. If push or `gh` fails, report `BLOCKED:` with the error's first \
-             line."
+            " Implementers: commit and `git push -u origin HEAD` every turn; the first time, \
+             also `gh pr create --fill{base_flag}`, and on later turns push to that same PR. If \
+             push or `gh` fails, report `BLOCKED:` with the error's first line."
         ));
     }
     format!("<nebula-worker-guidance>\n{text}\n</nebula-worker-guidance>")
@@ -560,6 +560,10 @@ mod tests {
             "origin/HEAD is no branch gh can target"
         );
         assert!(!worker_guidance(None, None).contains("gh pr create"));
+        assert!(
+            default_branch.contains("on later turns push to that same PR"),
+            "a review round's follow-up must not try to open a second PR"
+        );
     }
 
     #[test]

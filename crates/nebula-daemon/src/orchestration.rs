@@ -9,7 +9,7 @@ use nebula_core::orchestration::Orchestration;
 /// Why a create asking for an orchestrator on a harness with no
 /// system-prompt flag is refused.
 pub(crate) const NEEDS_SYSTEM_PROMPT: &str =
-    "orchestrator needs a harness with a system prompt flag (claude, pi)";
+    "orchestrator needs a harness with a system prompt flag (claude, pi, grok)";
 
 pub const ORCHESTRATOR_GUIDANCE: &str = "[nebula] You are a nebula orchestrator. You turn the \
 user's task into a reviewed pull request by running nebula workers. Rules:\n\
