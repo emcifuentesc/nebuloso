@@ -519,11 +519,8 @@ pub async fn wait_for_children(
     loop {
         let children = workers.statuses(&ids).await?;
         let statuses = children.iter().map(|c| c.status).collect::<Vec<_>>();
-        let exit = if tokio::time::Instant::now() >= deadline {
-            Some(WaitExit::TimedOut)
-        } else {
-            wait_exit(&statuses, any)
-        };
+        let exit = wait_exit(&statuses, any)
+            .or_else(|| (tokio::time::Instant::now() >= deadline).then_some(WaitExit::TimedOut));
         if let Some(exit) = exit {
             print_statuses(&children)?;
             return Ok(exit);
