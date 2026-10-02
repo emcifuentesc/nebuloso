@@ -4559,3 +4559,111 @@ async fn spawn_worktree_starts_a_parented_worker_in_a_new_checkout() {
     write_frame(&mut c, &ClientRequest::Shutdown).await.unwrap();
     wait_for_exit(&mut daemon);
 }
+
+/// `nebula children`, `status` and `wait` over the real binary: the lead
+/// sees its worker, a worker with none sees [], an agent that is not the
+/// caller's worker is refused with nothing printed, `wait` on a worker
+/// still at work times out with 12, and a Stop hook lets it return 0.
+#[tokio::test]
+async fn children_status_and_wait_report_the_callers_workers() {
+    let env = TestEnv::new();
+    let repo = env.make_repo();
+    let env_dir = env.tmp.path().join("agent-env");
+    std::fs::create_dir_all(&env_dir).unwrap();
+    let script = env.tmp.path().join("agent.sh");
+    std::fs::write(
+        &script,
+        format!(
+            "#!/bin/sh\nenv | grep '^NEBULA_' > '{}'/$NEBULA_AGENT_ID.env\nexec sleep 600\n",
+            env_dir.display()
+        ),
+    )
+    .unwrap();
+    make_executable(&script);
+    let mut daemon = env.spawn_daemon_with_agent_cmd(script.to_str().unwrap());
+    let mut c = connect(&env.sock()).await;
+    handshake(&mut c).await;
+    let main_worktree = add_project_get_main_worktree(&mut c, &repo).await;
+    write_frame(
+        &mut c,
+        &ClientRequest::CreateAgent {
+            req_id: 2,
+            worktree: main_worktree.id.clone(),
+            name: "lead".into(),
+            kind: AgentKind::Claude,
+            custom_harness: None,
+            model: None,
+            effort: None,
+            auto_title: false,
+            cloud_prompt: None,
+            starting_prompt: None,
+            issue_url: None,
+        },
+    )
+    .await
+    .unwrap();
+    let events = read_events_until(&mut c, EVENT_TIMEOUT, |evs| find_ack(evs, 2).is_some()).await;
+    let Some(ServerEvent::Ack {
+        created: Some(EntityId::Agent(lead)),
+        ..
+    }) = find_ack(&events, 2)
+    else {
+        panic!("CreateAgent failed: {events:#?}");
+    };
+    let lead = lead.clone();
+    let lead_env = read_env_file(&env_dir.join(format!("{}.env", lead.0))).await;
+    let port: u16 = lead_env[env::API_URL]
+        .rsplit(':')
+        .next()
+        .unwrap()
+        .parse()
+        .unwrap();
+    let token = lead_env[env::API_TOKEN].clone();
+
+    let out = agent_cli(&env, &lead, &["spawn", "--child", "write the tests"]);
+    assert!(out.status.success(), "child spawn failed: {out:?}");
+    let line: serde_json::Value =
+        serde_json::from_str(String::from_utf8(out.stdout).unwrap().trim()).unwrap();
+    let worker = nebula_core::AgentId(line["id"].as_str().unwrap().to_string());
+
+    let out = agent_cli(&env, &lead, &["children"]);
+    assert!(out.status.success(), "children failed: {out:?}");
+    let children: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let children = children.as_array().unwrap();
+    assert_eq!(children.len(), 1, "{children:?}");
+    assert_eq!(children[0]["id"], worker.0.as_str());
+    assert_eq!(children[0]["kind"], "claude");
+    assert_eq!(children[0]["branch"], line["branch"]);
+
+    let out = agent_cli(&env, &worker, &["children"]);
+    assert!(out.status.success(), "children failed: {out:?}");
+    assert_eq!(String::from_utf8(out.stdout).unwrap(), "[]\n");
+
+    let out = agent_cli(&env, &worker, &["status", &lead.0]);
+    assert!(!out.status.success(), "status on a stranger must fail");
+    assert!(out.stdout.is_empty(), "a refusal prints nothing: {out:?}");
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains(&format!("{} is not your worker", lead.0)),
+        "{out:?}"
+    );
+
+    let started = std::time::Instant::now();
+    let out = agent_cli(&env, &lead, &["wait", "--timeout", "1s", &worker.0]);
+    assert_eq!(out.status.code(), Some(12), "{out:?}");
+    assert!(started.elapsed() < Duration::from_secs(3), "timed out late");
+    let printed: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(printed[0]["id"], worker.0.as_str());
+
+    let hook = |event: &str| format!("/api/hooks/claude?agentId={}&hookEvent={event}", worker.0);
+    for event in ["UserPromptSubmit", "Stop"] {
+        let (status, _) = hook_post(port, &hook(event), &token).await;
+        assert_eq!(status, 200, "{event}");
+    }
+    let out = agent_cli(&env, &lead, &["wait", "--timeout", "10s", &worker.0]);
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    let printed: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(printed[0]["status"], "finished");
+
+    write_frame(&mut c, &ClientRequest::Shutdown).await.unwrap();
+    wait_for_exit(&mut daemon);
+}
