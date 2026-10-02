@@ -2198,6 +2198,15 @@ fn draw_card(
         return;
     }
 
+    // An orchestrator's tally sits on the runs-on row, where it has the
+    // card's width beside the harness; under an issue number, which holds
+    // that row's right end, it stays after the name.
+    let issue_row = card_issue_label(app, a)
+        .is_some_and(|l| card_issue_rect(area, l.chars().count()).is_some());
+    let (tag, tally) = match &row.nest {
+        Nest::Top(_) if !issue_row => (None, tag),
+        _ => (tag, None),
+    };
     let (ago, name_max) = fit_ago(ago, width);
     let branch_w = branch.chars().count();
     let (name, tag) = fit_name(
@@ -2239,6 +2248,15 @@ fn draw_card(
             Style::default().fg(quiet_or(dim)),
         )]
     };
+    let (harness_cut, tally) = fit_name(&harness, tally.as_deref(), width);
+    if let Some(tally) = tally {
+        let pad = width - harness_cut.chars().count() - tally.chars().count();
+        second = vec![
+            Span::styled(harness_cut, Style::default().fg(quiet_or(dim))),
+            Span::raw(" ".repeat(pad)),
+            Span::styled(tally, Style::default().fg(quiet_or(dim))),
+        ];
+    }
     // The issue it was started from, at the row's right end — a link, and
     // the only thing on the card under the pointer that is not the card
     // (`HitTarget::LauncherCardIssue`, placed by `card_issue_rect`).
@@ -5803,8 +5821,8 @@ mod tests {
         let cards = fleet_lines(&mut app, 160);
         let screen = cards.join("\n");
         assert!(
-            screen.contains("● orchestrate 1 running · 1 wait…"),
-            "a card cuts the tally to fit: {screen}"
+            screen.contains("claude 1 running · 1 waiting · 1…"),
+            "a card tallies on its runs-on row, cut to fit: {screen}"
         );
         for name in ["fix-auth", "add-search", "tidy-css"] {
             assert!(screen.contains(&format!("└ ● {name}")), "{screen}");
