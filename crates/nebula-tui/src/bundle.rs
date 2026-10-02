@@ -668,6 +668,46 @@ mod tests {
         assert_eq!(section_count(&remote), 2);
     }
 
+    /// `orchestration` crosses an export and an import as written, its
+    /// roster order included: the brain reads the order back.
+    #[test]
+    fn orchestration_round_trips_unchanged_roster_order_included() {
+        let from = tempfile::tempdir().unwrap();
+        let raw = r#"{"orchestration": {
+            "roster": {
+                "zeta": {"kind": "claude", "model": "opus", "unattended": true},
+                "alpha": {"kind": "pi", "roles": ["review"]}
+            },
+            "max_children": 3,
+            "cross_review": {"max_rounds": 3}
+        }}"#;
+        let p = paths(from.path());
+        std::fs::write(&p.config, raw).unwrap();
+        let file = from.path().join(FILE_NAME);
+        for scope in [Scope::Backup, Scope::Remote] {
+            let (bundle, _) = export(&p, scope);
+            let carried = match scope {
+                Scope::Backup => {
+                    std::fs::write(&file, bundle.to_string()).unwrap();
+                    read_source(file.to_str().unwrap()).unwrap()
+                }
+                Scope::Remote => decode(&encode(&bundle)).unwrap(),
+            };
+            let into = tempfile::tempdir().unwrap();
+            let q = paths(into.path());
+            import(&q, &carried).unwrap();
+            let written = get(&q.config);
+            let expected: Value = serde_json::from_str(raw).unwrap();
+            assert_eq!(written, expected, "{scope:?}");
+            let keys: Vec<&String> = written["orchestration"]["roster"]
+                .as_object()
+                .unwrap()
+                .keys()
+                .collect();
+            assert_eq!(keys, ["zeta", "alpha"], "{scope:?}");
+        }
+    }
+
     #[test]
     fn remote_bundles_leave_exec_capable_harness_keys_behind() {
         let dir = tempfile::tempdir().unwrap();
