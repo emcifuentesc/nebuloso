@@ -36,7 +36,14 @@ final verdict, and any unresolved issues.\n\
 8. Failures stop the loop with no retries and don't count as rounds. Stop and give the user the \
 worker's status and last report when `wait` exits 11 (died) or 12 (timed out), any `nebula` \
 command exits nonzero, or an implementer's report is `BLOCKED:`, missing, stale or has no PR \
-URL.";
+URL.\n\
+9. Fanout: when the user gives independent tasks, or the task splits into parts that share no \
+files, start one implementer per task, each with its own `--worktree`, rotating through the \
+roster's implementers so consecutive tasks use different kinds. Loop `nebula wait --any <ids>` \
+and run rules 5 and 6 on each worker as it settles. Each task gets its own PR. Stay within \
+`max_children` (in the roster), counting implementers and reviewers together; at the limit, \
+`nebula archive` a finished implementer and its reviewer before starting the next queued task. \
+Finish with one line per task: PR URL, rounds used, final verdict, unresolved issues.";
 
 /// What an orchestrator's system prompt carries: the guidance, then the
 /// roster resolved for its project when it spawned, fenced like a worker's
@@ -70,6 +77,15 @@ mod tests {
             "Never merge, never force-push, never close PRs. Finish with: the PR URL, rounds \
              used, the final verdict, and any unresolved issues.",
             "Failures stop the loop with no retries and don't count as rounds.",
+            "start one implementer per task, each with its own `--worktree`",
+            "rotating through the roster's implementers so consecutive tasks use different kinds",
+            "Loop `nebula wait --any <ids>` and run rules 5 and 6 on each worker as it settles.",
+            "Each task gets its own PR.",
+            "Stay within `max_children` (in the roster), counting implementers and reviewers \
+             together",
+            "`nebula archive` a finished implementer and its reviewer before starting the next \
+             queued task",
+            "one line per task: PR URL, rounds used, final verdict, unresolved issues",
         ];
         for rule in rules {
             assert!(ORCHESTRATOR_GUIDANCE.contains(rule), "missing: {rule}");
