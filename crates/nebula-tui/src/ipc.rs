@@ -3,6 +3,7 @@
 
 use anyhow::{bail, Context, Result};
 use nebula_core::codec::{read_frame, write_frame};
+use nebula_core::orchestration::Orchestration;
 use nebula_core::{
     env, paths, AgentId, AgentKind, AgentStatus, ChildSpawn, ChildStatus, ClientRequest,
     EnterOutcome, ServerEvent, WorkerResult, PROTOCOL_VERSION,
@@ -511,6 +512,43 @@ impl Workers {
             }
         }
     }
+
+    /// The roster resolved for this session's project. A refusal is the
+    /// daemon's message as an `Err`.
+    async fn roster(&mut self) -> Result<Orchestration> {
+        let req_id = self.next_req_id;
+        self.next_req_id += 1;
+        write_frame(
+            &mut self.conn.stream,
+            &ClientRequest::Roster {
+                req_id,
+                id: self.caller.clone(),
+            },
+        )
+        .await?;
+        loop {
+            match read_frame::<ServerEvent, _>(&mut self.conn.stream).await? {
+                Some(ServerEvent::Roster {
+                    req_id: r,
+                    orchestration,
+                }) if r == req_id => return Ok(orchestration),
+                Some(ServerEvent::Error {
+                    req_id: Some(r),
+                    message,
+                }) if r == req_id => bail!("{message}"),
+                Some(_) => continue,
+                None => bail!("{CLOSED_BEFORE_REPLY}"),
+            }
+        }
+    }
+}
+
+/// CLI: `nebula roster`, from inside an agent session: the roster its
+/// workers start from, as one JSON object.
+pub async fn print_roster() -> Result<()> {
+    let orchestration = Workers::connect("roster").await?.roster().await?;
+    println!("{}", serde_json::to_string(&orchestration)?);
+    Ok(())
 }
 
 /// CLI: `nebula report [--pr <url>] <text>`, from inside a worker's
@@ -989,6 +1027,7 @@ mod tests {
             id: AgentId("w".into()),
             name: "w".into(),
             kind: AgentKind::Claude,
+            role: None,
             status,
             status_changed_at: 0,
             awaiting_turn,

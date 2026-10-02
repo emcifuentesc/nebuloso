@@ -513,6 +513,8 @@ mod tests {
             issue_url: None,
             recent_prompts: Vec::new(),
             parent_agent_id: None,
+            role: None,
+            unattended: false,
         };
         store
             .insert_agent_with_auto_title(&agent("pending"), true)

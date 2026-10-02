@@ -7,6 +7,7 @@ pub mod harness;
 pub mod host;
 pub mod ids;
 pub mod mem;
+pub mod orchestration;
 pub mod paste;
 pub mod paths;
 pub mod project_file;

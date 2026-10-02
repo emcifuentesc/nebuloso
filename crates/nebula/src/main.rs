@@ -44,16 +44,19 @@ fn main() -> Result<()> {
             task,
             kind,
             child,
+            role,
             worktree,
             base,
             model,
             effort,
         }) => {
-            let child = (child || worktree.is_some()).then(|| nebula_core::ChildSpawn {
-                worktree: worktree.map(|branch| nebula_core::SpawnWorktree { branch, base }),
-                model,
-                effort,
-            });
+            let child =
+                (child || worktree.is_some() || role.is_some()).then(|| nebula_core::ChildSpawn {
+                    worktree: worktree.map(|branch| nebula_core::SpawnWorktree { branch, base }),
+                    model,
+                    effort,
+                    role,
+                });
             nebula_tui::run_spawn(task.join(" "), kind, child)
         }
         Some(Command::Children) => nebula_tui::run_child_status(Vec::new(), "children"),
@@ -65,6 +68,7 @@ fn main() -> Result<()> {
         Some(Command::Send { id, text }) => nebula_tui::run_send(id, text.join(" ")),
         Some(Command::Report { pr, text }) => nebula_tui::run_report(text.join(" "), pr),
         Some(Command::Result { id }) => nebula_tui::run_result(id),
+        Some(Command::Roster) => nebula_tui::run_roster(),
         Some(Command::Open { files }) => nebula_tui::run_open(files),
         Some(Command::Browser {
             port,

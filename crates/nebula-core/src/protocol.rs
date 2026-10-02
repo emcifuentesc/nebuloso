@@ -2,12 +2,13 @@ use crate::entities::{
     Agent, AgentKind, AgentStatus, Entity, EntityId, Link, Project, TerminalTab, Worktree,
 };
 use crate::ids::{AgentId, LinkId, ProjectId, TerminalId, WorktreeId};
+use crate::orchestration::Orchestration;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 /// Bump on any breaking change to these enums. The daemon refuses mismatched
 /// clients; the client then offers a kill-and-restart of the old daemon.
-pub const PROTOCOL_VERSION: u32 = 48;
+pub const PROTOCOL_VERSION: u32 = 49;
 
 /// Max IPC frame size (length prefix sanity bound).
 pub const MAX_FRAME_LEN: u32 = 4 * 1024 * 1024;
@@ -281,6 +282,12 @@ pub enum ClientRequest {
         id: AgentId,
         child: AgentId,
     },
+    /// `nebula roster`: the ROSTER the caller's workers can be started
+    /// from, resolved for its project. Answered with `Roster`.
+    Roster {
+        req_id: u64,
+        id: AgentId,
+    },
     /// `nebula open <file>…`, run by the agent from inside its own session:
     /// show these files to the user in every attached TUI's FILE TABS —
     /// one tab per file, the focused one previewed, Enter editing it.
@@ -448,9 +455,14 @@ pub struct SessionMetrics {
 pub struct ChildSpawn {
     /// A new WORKTREE for the worker; None runs it in the caller's.
     pub worktree: Option<SpawnWorktree>,
-    /// Model and effort for the worker's CLI, over what it would inherit.
+    /// Model and effort for the worker's CLI, over what it would inherit
+    /// or what its role names.
     pub model: Option<String>,
     pub effort: Option<String>,
+    /// The ROSTER key the worker is started as (`nebula spawn --role`): its
+    /// harness, model, effort and unattended flag come from that entry.
+    #[serde(default)]
+    pub role: Option<String>,
 }
 
 /// One worker as its parent sees it: what `nebula children`, `status` and
@@ -460,6 +472,8 @@ pub struct ChildStatus {
     pub id: AgentId,
     pub name: String,
     pub kind: AgentKind,
+    /// The ROSTER key it was started as, if any.
+    pub role: Option<String>,
     pub status: AgentStatus,
     pub status_changed_at: i64,
     /// A `nebula send` reached it and its status machine has not yet
@@ -485,6 +499,7 @@ pub struct WorkerResult {
     pub id: AgentId,
     pub name: String,
     pub kind: AgentKind,
+    pub role: Option<String>,
     pub status: AgentStatus,
     pub awaiting_turn: bool,
     /// The worker's last `nebula report`, or None if it never reported.
@@ -613,6 +628,11 @@ pub enum ServerEvent {
         req_id: u64,
         result: WorkerResult,
     },
+    /// Reply to `Roster`.
+    Roster {
+        req_id: u64,
+        orchestration: Orchestration,
+    },
     /// Reply to `EnterWorktree`: the worktree the agent now belongs to, and
     /// what that meant for its process.
     WorktreeEntered {
@@ -713,6 +733,7 @@ mod tests {
                     id: AgentId("w".into()),
                     name: "w".into(),
                     kind: AgentKind::Claude,
+                    role: None,
                     status,
                     status_changed_at: 0,
                     awaiting_turn,

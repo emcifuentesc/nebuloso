@@ -25,9 +25,10 @@ into `config.json`:
 ```
 
 Both halves of nebula read the two files. The TUI owns most keys; the DAEMON owns
-`worktree_base_branch`, `session_idle_timeout`, `prewarm_agents` and `prewarm_sessions`, reads
-`custom_harnesses` and `harnesses` beside the TUI (spawn and resume go through them), and reads one
-key out of each `projects` entry, `run_command`. Each side
+`worktree_base_branch`, `session_idle_timeout`, `prewarm_agents`, `prewarm_sessions` and
+`orchestration`, reads `custom_harnesses` and `harnesses` beside the TUI (spawn and resume go
+through them), and reads two keys out of each `projects` entry, `run_command` and
+`orchestration`. Each side
 deserializes only its own fields and ignores the rest, and both load
 them fresh on every use — so a hand edit applies without restarting either. No key is required: a
 missing file is all defaults, an unknown field is skipped, a value this build can't read costs only
@@ -119,6 +120,7 @@ behaviors that change how the tree is worked; every switch there is off by defau
 | `opencode_model` | string | `"default"` | Agents | Default `--model` for new OpenCode sessions: a `provider/model` id passed verbatim (`opencode models` lists what your machine has credentials for). The overlay lists a few well-known ids (`opencode/big-pickle`, `anthropic/claude-sonnet-5`, …); a hand-edited one passes through. `"default"` means don't pass the flag, so OpenCode opens on its own last-picked model. There is no `opencode_effort`: OpenCode has no effort flag (reasoning is a per-model variant picked inside its TUI), so its Agents section has no Effort row. |
 | `custom_harnesses` | array | `[]` | Agents | Extra CLIs the NEW SESSION PICKER offers after the built-ins, each with its own Agents tab section (Enabled and Model rows). Each entry is `{id, program}` plus options: `label` (picker text, defaults to the id), `enabled` (default `true`), `model` (default `"default"` = the CLI's pick, else passed verbatim), `model_flag` (default `"--model"`), and `hooks` (a built-in dialect the program speaks: `claude`, `codex`, `cursor`, `pi` or `opencode` — with one set the sessions report status, prompts and permission waits exactly like that harness, including title sync and auto-title for `claude`; without one they stay process-based, running while the PTY is live and never waiting-on-you). Ids use lowercase letters, digits and hyphens and must not collide with a built-in. Legacy: new harnesses belong in `harnesses`, where they also gain resume, effort, system-prompt and hook-dialect rows. Invalid entries never launch — the picker hides them and the daemon refuses them with the reason. |
 | `harnesses` | object | `{}` | Agents | The harness registry: per-harness deltas over the compiled-in known harnesses (Claude, Codex, Cursor, Pi, Muse, Grok Build, OpenCode), and whole new third-party CLIs. The Agents tab grows one section per entry — Enabled, Model, and Effort rows while the harness offers effort — and the `n` picker, `e` presets, spawn, resume and hooks all read the merged rows. A hand edit that breaks one entry refuses its launches with the reason, never the whole file. Run `nebula config harnesses` to print the effective rows to copy from. |
+| `orchestration` | object | see below | — (hand-edited) | The ROSTER `nebula spawn --role` starts workers from, and `max_children`, how many unarchived workers one session may run (1 to 32, default 8). Read by the daemon only; see [Orchestration](#orchestration). |
 | `keybindings` | object | `{}` | Hotkeys | KEYMAP overrides, keyed by action id, valued with a comma-separated chord list: `{"git_diff": "ctrl+g, g"}`. An empty string deliberately unbinds; unknown ids are ignored. Only rows that differ from the defaults are written. |
 | `prewarm_agents` | bool | `true` | Sessions | DAEMON-owned PREWARM POOL: keep one booted agent CLI standing by in the selected WORKTREE, so creating a session there adopts it and feels instant. **Costs one idle CLI process per warm slot** (150–300 MB each, up to 15 minutes), and that spare is a real session as far as the CLI is concerned — Claude's own `/list-agents` lists it beside the sessions you made, named after the directory (`my-repo-3f`), and the memory modal (`Shift+M`) groups it under **warm spares**. Off drains the pool on the DAEMON's next sweep (within 30 s). |
 | `prewarm_sessions` | bool | `true` | Sessions | DAEMON-owned SESSION PREWARM: boot a WORKTREE's dead sessions when your selection rests on it, so attaching shows an already-booted screen instead of a booting shell. **Costs idle shell/CLI processes for sessions you may never open.** Off — for a machine with less memory to spare — landing on a worktree boots nothing: a session forks only when your cursor lands on its row or you attach to it, one at a time; sessions already up stay until the IDLE REAPER takes them. |
@@ -179,6 +181,46 @@ to pass `--model` and `--reasoning-effort`; unset values use the CLI defaults. T
 only `default` unless you configure `models` and `efforts` lists in that same block.
 `--rules` carries additional system guidance and `--resume` accepts a stored session ID, but
 automatic session-ID capture and managed hooks are not yet supported. Status is process-based.
+
+### Orchestration
+
+`orchestration` is what a lead session's workers are started from. `roster` names entries a
+`nebula spawn --role <key>` can ask for; `nebula roster` prints the result for the caller's project.
+
+```json
+{
+  "orchestration": {
+    "roster": {
+      "claude": { "kind": "claude", "model": "claude-opus-5-5", "effort": "high", "unattended": true },
+      "codex":  { "kind": "codex" },
+      "pi":     { "kind": "pi", "roles": ["review"] }
+    },
+    "max_children": 8
+  }
+}
+```
+
+Each entry takes `kind` (a built-in harness other than `muse`, or a custom harness id from
+`harnesses` or `custom_harnesses`), and optionally `model`, `effort`, `roles` (`implement`,
+`review`; both by default) and `unattended` (default `false`). A `--role` spawn needs `implement`
+in the entry's roles. With `unattended` the worker launches with its harness's `unattended_args`:
+`--permission-mode auto` for Claude, nothing for the rest (Codex and Cursor already skip permissions
+through `permissions_flag`). Override the tokens per harness in `harnesses`, for example
+`"claude": {"unattended_args": ["--dangerously-skip-permissions"]}`; `[]` clears them. A worker
+keeps the flag across respawns and resumes. A session you start yourself never gets it.
+
+With no `roster`, it lists every installed harness that has hooks, in the order claude, codex,
+cursor, pi, opencode, keyed by kind, each with both roles and `unattended: false`. "Installed"
+means the daemon finds its program on PATH through your login shell, as it does at launch. A
+harness switched off in `harnesses` is left out.
+
+This key layers differently from the others. The first layer to set a `roster` replaces the
+default one: `config.json`, then `config.local.json`, then the project's own
+`projects.<repo path>.orchestration`. Each layer after it replaces whole entries by key, and
+`"pi": null` removes one. `max_children` and other values are replaced, and `null` brings back the
+default. Entries list in the order the files write them. A layer's new keys follow the keys before
+them. Keys nebula does not read yet are ignored. An entry that cannot be used refuses `--role`
+spawns and `nebula roster` with its name: `roster entry pi: unknown kind pie`.
 
 ### What `session_idle_timeout` accepts
 

@@ -133,6 +133,12 @@ pub fn run_result(child: String) -> Result<()> {
     runtime()?.block_on(ipc::print_child_result(nebula_core::AgentId(child)))
 }
 
+/// `nebula roster` — the roster this session's workers start from, as JSON
+/// (see `ipc::print_roster`).
+pub fn run_roster() -> Result<()> {
+    runtime()?.block_on(ipc::print_roster())
+}
+
 /// `nebula wait <id>…` — block until the workers settle and return how
 /// they did as the exit code (see `ipc::wait_for_children`).
 pub fn run_wait(

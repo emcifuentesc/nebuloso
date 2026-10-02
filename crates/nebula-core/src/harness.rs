@@ -172,6 +172,12 @@ pub struct HarnessDescriptor {
     /// none and launches as-is.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub permissions_flag: Option<String>,
+    /// Argv tokens a worker whose roster entry is `unattended` launches
+    /// with, so it runs without stopping for permission prompts. Empty =
+    /// the harness needs none (its `permissions_flag` already bypasses) or
+    /// has none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unattended_args: Vec<String>,
     /// Flag carrying the first prompt (`--prompt`) where the CLI's
     /// positional is not a prompt (OpenCode's is the project path). None =
     /// the prompt rides trailing, like every other CLI's positional.
@@ -374,6 +380,7 @@ pub fn builtin(id: &str) -> Option<HarnessDescriptor> {
         model: ModelSpec::default(),
         effort: EffortSpec::default(),
         permissions_flag: None,
+        unattended_args: Vec::new(),
         prompt_flag: None,
         resume: ResumeSpec::default(),
         system: SystemSpec::default(),
@@ -409,6 +416,7 @@ pub fn builtin(id: &str) -> Option<HarnessDescriptor> {
                 append_flag: Some("--append-system-prompt".into()),
                 ..SystemSpec::default()
             },
+            unattended_args: vec!["--permission-mode".into(), "auto".into()],
             hooks: Some("claude".into()),
             relocation_prompt: true,
             ..base
@@ -666,6 +674,8 @@ pub struct HarnessOverride {
     pub effort_offered: Option<bool>,
     #[serde(default, skip_serializing_if = "Clearable::is_keep")]
     pub permissions_flag: Clearable<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unattended_args: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "Clearable::is_keep")]
     pub prompt_flag: Clearable<String>,
     #[serde(default, skip_serializing_if = "Clearable::is_keep")]
@@ -724,6 +734,9 @@ impl HarnessDescriptor {
             self.effort.offered = offered;
         }
         over.permissions_flag.apply_to(&mut self.permissions_flag);
+        if let Some(args) = over.unattended_args.clone() {
+            self.unattended_args = args;
+        }
         over.prompt_flag.apply_to(&mut self.prompt_flag);
         over.resume_flag.apply_to(&mut self.resume.flag);
         over.resume_subcommand.apply_to(&mut self.resume.subcommand);
@@ -818,6 +831,7 @@ impl CustomHarness {
             },
             effort: EffortSpec::default(),
             permissions_flag: None,
+            unattended_args: Vec::new(),
             prompt_flag: None,
             resume: ResumeSpec::default(),
             system: SystemSpec::default(),
@@ -898,6 +912,7 @@ pub fn registry(
             model: ModelSpec::default(),
             effort: EffortSpec::default(),
             permissions_flag: None,
+            unattended_args: Vec::new(),
             prompt_flag: None,
             resume: ResumeSpec::default(),
             system: SystemSpec::default(),
@@ -1055,6 +1070,30 @@ mod tests {
         claude.apply(&clear);
         assert_eq!(claude.hooks, None);
         assert!(!claude.claude_like());
+    }
+
+    #[test]
+    fn unattended_args_are_claudes_alone_and_an_override_replaces_them() {
+        assert_eq!(
+            builtin("claude").unwrap().unattended_args,
+            ["--permission-mode", "auto"]
+        );
+        for other in builtins().into_iter().filter(|h| h.id != "claude") {
+            assert!(other.unattended_args.is_empty(), "{}", other.id);
+        }
+        let mut claude = builtin("claude").unwrap();
+        claude.apply(
+            &serde_json::from_value(serde_json::json!({
+                "unattended_args": ["--dangerously-skip-permissions"],
+            }))
+            .unwrap(),
+        );
+        assert_eq!(claude.unattended_args, ["--dangerously-skip-permissions"]);
+        claude.apply(&serde_json::from_value(serde_json::json!({"unattended_args": []})).unwrap());
+        assert!(
+            claude.unattended_args.is_empty(),
+            "an empty list clears them"
+        );
     }
 
     #[test]

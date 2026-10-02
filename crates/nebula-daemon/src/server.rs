@@ -343,6 +343,8 @@ async fn handle_client(daemon: Arc<Daemon>, stream: UnixStream) -> Result<()> {
                             pr_url: None,
                             issue_url,
                             parent_agent_id: None,
+                            role: None,
+                            unattended: false,
                         })
                         .await;
                     if let Some(launch_mode) = launch_mode {
@@ -547,6 +549,19 @@ async fn handle_client(daemon: Arc<Daemon>, stream: UnixStream) -> Result<()> {
                 ClientRequest::ChildResult { req_id, id, child } => {
                     let ev = match daemon.worker_result(&id, &child).await {
                         Ok(result) => ServerEvent::ChildResult { req_id, result },
+                        Err(e) => ServerEvent::Error {
+                            req_id: Some(req_id),
+                            message: format!("{e:#}"),
+                        },
+                    };
+                    let _ = out_tx.send(ev).await;
+                }
+                ClientRequest::Roster { req_id, id } => {
+                    let ev = match daemon.roster(&id).await {
+                        Ok(orchestration) => ServerEvent::Roster {
+                            req_id,
+                            orchestration,
+                        },
                         Err(e) => ServerEvent::Error {
                             req_id: Some(req_id),
                             message: format!("{e:#}"),

@@ -10927,6 +10927,8 @@ mod tests {
                     issue_url: None,
                     recent_prompts: Vec::new(),
                     parent_agent_id: None,
+                    role: None,
+                    unattended: false,
                 }),
             },
         );
@@ -10957,6 +10959,8 @@ mod tests {
                     issue_url: None,
                     recent_prompts: Vec::new(),
                     parent_agent_id: None,
+                    role: None,
+                    unattended: false,
                 }),
             },
         );
@@ -11715,6 +11719,8 @@ mod tests {
                     issue_url: None,
                     recent_prompts: Vec::new(),
                     parent_agent_id: None,
+                    role: None,
+                    unattended: false,
                 }),
             },
         );
@@ -15706,6 +15712,8 @@ diff --git a/src/c.rs b/src/c.rs
                     issue_url: None,
                     recent_prompts: Vec::new(),
                     parent_agent_id: None,
+                    role: None,
+                    unattended: false,
                 }),
             }
         };
@@ -15762,6 +15770,8 @@ diff --git a/src/c.rs b/src/c.rs
                 issue_url: None,
                 recent_prompts: Vec::new(),
                 parent_agent_id: None,
+                role: None,
+                unattended: false,
             }),
         };
         // A long-running turn outranks a more recent finish, because a
@@ -15845,6 +15855,8 @@ diff --git a/src/c.rs b/src/c.rs
                 issue_url: None,
                 recent_prompts: Vec::new(),
                 parent_agent_id: None,
+                role: None,
+                unattended: false,
             }),
         };
         hse(
@@ -15906,6 +15918,8 @@ diff --git a/src/c.rs b/src/c.rs
                     issue_url: None,
                     recent_prompts: Vec::new(),
                     parent_agent_id: None,
+                    role: None,
+                    unattended: false,
                 }),
             },
         );
@@ -15976,6 +15990,8 @@ diff --git a/src/c.rs b/src/c.rs
                     issue_url: None,
                     recent_prompts: Vec::new(),
                     parent_agent_id: None,
+                    role: None,
+                    unattended: false,
                 }),
             },
         );
@@ -18181,6 +18197,8 @@ diff --git a/src/c.rs b/src/c.rs
                     issue_url: None,
                     recent_prompts: Vec::new(),
                     parent_agent_id: None,
+                    role: None,
+                    unattended: false,
                 }),
             },
         );
@@ -18707,6 +18725,8 @@ diff --git a/src/c.rs b/src/c.rs
             issue_url: None,
             recent_prompts: Vec::new(),
             parent_agent_id: None,
+            role: None,
+            unattended: false,
         })
     }
 
@@ -20196,6 +20216,8 @@ diff --git a/src/c.rs b/src/c.rs
             issue_url: None,
             recent_prompts: Vec::new(),
             parent_agent_id: None,
+            role: None,
+            unattended: false,
         };
 
         // a1 is the selected session; its upsert lands under w2.
@@ -20388,6 +20410,8 @@ diff --git a/src/c.rs b/src/c.rs
             issue_url: None,
             recent_prompts: Vec::new(),
             parent_agent_id: None,
+            role: None,
+            unattended: false,
         })
     }
 
@@ -22124,6 +22148,8 @@ diff --git a/src/c.rs b/src/c.rs
                     issue_url: None,
                     recent_prompts: Vec::new(),
                     parent_agent_id: None,
+                    role: None,
+                    unattended: false,
                 }),
             },
         );
@@ -22150,6 +22176,8 @@ diff --git a/src/c.rs b/src/c.rs
                     issue_url: None,
                     recent_prompts: Vec::new(),
                     parent_agent_id: None,
+                    role: None,
+                    unattended: false,
                 }),
             },
         );
@@ -22464,6 +22492,8 @@ diff --git a/src/c.rs b/src/c.rs
             issue_url: None,
             recent_prompts: Vec::new(),
             parent_agent_id: None,
+            role: None,
+            unattended: false,
         };
         for a in [
             agent("ask", "w2", AgentStatus::NeedsFeedback, false),
@@ -22924,6 +22954,8 @@ diff --git a/src/c.rs b/src/c.rs
                     issue_url: None,
                     recent_prompts: Vec::new(),
                     parent_agent_id: None,
+                    role: None,
+                    unattended: false,
                 }),
             },
         );
@@ -25140,6 +25172,8 @@ diff --git a/src/c.rs b/src/c.rs
                         issue_url: None,
                         recent_prompts: Vec::new(),
                         parent_agent_id: None,
+                        role: None,
+                        unattended: false,
                     }),
                 },
             );
@@ -25215,6 +25249,8 @@ diff --git a/src/c.rs b/src/c.rs
             issue_url: None,
             recent_prompts: Vec::new(),
             parent_agent_id: None,
+            role: None,
+            unattended: false,
         })
     }
 
@@ -25839,6 +25875,8 @@ diff --git a/src/c.rs b/src/c.rs
                     issue_url: None,
                     recent_prompts: Vec::new(),
                     parent_agent_id: None,
+                    role: None,
+                    unattended: false,
                 }),
             },
         );
@@ -25907,6 +25945,8 @@ diff --git a/src/c.rs b/src/c.rs
                     issue_url: None,
                     recent_prompts: Vec::new(),
                     parent_agent_id: None,
+                    role: None,
+                    unattended: false,
                 }),
             },
         );
@@ -26714,6 +26754,8 @@ diff --git a/src/c.rs b/src/c.rs
                         issue_url: None,
                         recent_prompts: Vec::new(),
                         parent_agent_id: None,
+                        role: None,
+                        unattended: false,
                     }),
                 },
             );
@@ -28145,6 +28187,8 @@ diff --git a/src/c.rs b/src/c.rs
                         issue_url: None,
                         recent_prompts: Vec::new(),
                         parent_agent_id: None,
+                        role: None,
+                        unattended: false,
                     }),
                 },
             );
@@ -30068,6 +30112,8 @@ diff --git a/src/c.rs b/src/c.rs
                     issue_url: None,
                     recent_prompts: Vec::new(),
                     parent_agent_id: None,
+                    role: None,
+                    unattended: false,
                 }),
             },
         );

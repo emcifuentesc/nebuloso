@@ -97,6 +97,10 @@ pub(crate) struct CreateAgentSpec {
     pub issue_url: Option<String>,
     /// The session this one is a worker of (`nebula spawn --child`).
     pub parent_agent_id: Option<AgentId>,
+    /// The ROSTER key the worker was started with, and whether its entry
+    /// launches it unattended.
+    pub role: Option<String>,
+    pub unattended: bool,
 }
 
 /// A pre-spawned agent CLI waiting to be adopted by the next CreateAgent for
@@ -1047,6 +1051,8 @@ impl Daemon {
             pr_url,
             issue_url,
             parent_agent_id,
+            role,
+            unattended,
         } = spec;
         let cloud_prompt = match cloud_prompt {
             Some(_) if kind != AgentKind::Claude => {
@@ -1152,6 +1158,8 @@ impl Daemon {
             issue_url: issue_url.clone(),
             recent_prompts: Vec::new(),
             parent_agent_id,
+            role,
+            unattended,
         };
         self.store.insert_agent_with_launch_context(
             &agent,
@@ -1324,6 +1332,8 @@ impl Daemon {
             issue_url: None,
             recent_prompts: Vec::new(),
             parent_agent_id: None,
+            role: None,
+            unattended: false,
         };
         self.spawn_agent_session(&agent, &worktree, DEFAULT_COLS, DEFAULT_ROWS)?;
         tracing::info!(agent = %agent.id, kind = kind.as_str(), worktree = %worktree.branch, "prewarmed agent session");
@@ -1455,7 +1465,7 @@ impl Daemon {
     /// just-installed CLI gets picked up quickly. Probe trouble (timeout,
     /// spawn error) fails open — a doomed warm spawn is still graceful.
     /// Custom harnesses pass their entry's program; built-ins their CLI.
-    async fn cli_available(&self, program: &str) -> bool {
+    pub(crate) async fn cli_available(&self, program: &str) -> bool {
         if std::env::var(env::AGENT_CMD).is_ok() {
             return true; // test override is spawned verbatim
         }
@@ -2553,6 +2563,7 @@ impl Daemon {
                 prompts.initial.as_deref(),
                 prompts.system.as_deref(),
                 true,
+                agent.unattended,
             ),
         };
         // Run the agent through the user's login+interactive shell so it sees
@@ -3040,6 +3051,7 @@ fn agent_spawn_command(
         None,
         None,
         true,
+        false,
     )
 }
 
@@ -3132,7 +3144,7 @@ fn spawn_prompts(
 #[cfg(test)]
 const TEST_CWD: &str = "/nebula-test/p-feat";
 
-// Nine positional knobs are two over clippy's line; the callers are the
+// Ten positional knobs are three over clippy's line; the callers are the
 // two thin wrappers above and the tests, so a builder would only add
 // ceremony. Every behavior comes off `harness` — the registry descriptor
 // the launch resolved — never off the kind: a repointed program, a renamed
@@ -3148,6 +3160,7 @@ fn agent_spawn_command_with(
     initial_prompt: Option<&str>,
     additional_system_prompt: Option<&str>,
     guidance: bool,
+    unattended: bool,
 ) -> (String, Vec<String>, bool) {
     if let Some(cmd) = cmd_override {
         let mut parts = cmd.split_whitespace().map(String::from).collect::<Vec<_>>();
@@ -3176,6 +3189,9 @@ fn agent_spawn_command_with(
     };
     if let Some(flag) = harness.permissions_flag.as_deref() {
         args.push(flag.to_string());
+    }
+    if unattended {
+        args.extend(harness.unattended_args.iter().cloned());
     }
     // The model rides its flag — composed with the effort into one id for
     // Cursor's family-suffix shape (`claude-opus-5` + `high`: the TUI only
@@ -3331,6 +3347,7 @@ fn claude_cloud_spawn_command(
         cmd_override,
         None,
         None,
+        false,
         false,
     );
     if cmd_override.is_none() {
@@ -3914,6 +3931,7 @@ mod tests {
             Some("do it"),
             None,
             true,
+            false,
         );
         assert_eq!(program, "agy");
         assert_eq!(args, vec!["--model", "big-1", "do it"]);
@@ -3935,6 +3953,7 @@ mod tests {
             None,
             None,
             true,
+            false,
         );
         assert_eq!(args, vec!["-m", "flash"]);
     }
@@ -3952,8 +3971,58 @@ mod tests {
             prompts.initial.as_deref(),
             prompts.system.as_deref(),
             true,
+            false,
         )
         .1
+    }
+
+    /// An unattended worker's argv carries its harness's `unattended_args`
+    /// ahead of the prompts, fresh and resumed; a worker whose entry is not
+    /// unattended, and an ordinary session, never do.
+    #[test]
+    fn unattended_args_ride_only_an_unattended_spawn() {
+        let all = test_registry();
+        let argv = |kind: AgentKind, session: Option<&str>, unattended: bool| {
+            let harness = test_harness(&all, kind);
+            let prompts = spawn_prompts(&harness, session.is_some(), None, Some("go"), None);
+            agent_spawn_command_with(
+                &harness,
+                session,
+                Some(Path::new(TEST_CWD)),
+                None,
+                None,
+                None,
+                prompts.initial.as_deref(),
+                prompts.system.as_deref(),
+                true,
+                unattended,
+            )
+            .1
+        };
+        let auto = ["--permission-mode", "auto"].map(String::from);
+        for session in [None, Some("sid-1")] {
+            let args = argv(AgentKind::Claude, session, true);
+            let at = args
+                .windows(2)
+                .position(|pair| pair == auto)
+                .unwrap_or_else(|| panic!("{args:?}"));
+            assert!(at < args.len() - 1, "before the trailing prompt: {args:?}");
+            assert!(!argv(AgentKind::Claude, session, false).contains(&auto[0]));
+        }
+        assert!(
+            !agent_spawn_command(AgentKind::Claude, None, None, None, None)
+                .1
+                .contains(&auto[0]),
+            "an ordinary session"
+        );
+        for kind in [
+            AgentKind::Codex,
+            AgentKind::Cursor,
+            AgentKind::Pi,
+            AgentKind::OpenCode,
+        ] {
+            assert_eq!(argv(kind, None, true), argv(kind, None, false), "{kind:?}");
+        }
     }
 
     /// A worker's guidance rides the system-prompt flag where the harness
@@ -3978,6 +4047,7 @@ mod tests {
                     Some("fix the parser"),
                     None,
                     true,
+                    false,
                 )
                 .1;
                 assert_eq!(worker_argv(kind, resumed, None), plain, "{kind:?} ordinary");
@@ -4073,6 +4143,7 @@ mod tests {
             Some("do it"),
             None,
             true,
+            false,
         );
         assert_eq!(program, "agy");
         assert_eq!(
@@ -4118,6 +4189,7 @@ mod tests {
             Some("fix auth"),
             None,
             true,
+            false,
         );
         assert_eq!(program, "grok");
         assert!(!resumed);
@@ -4141,6 +4213,7 @@ mod tests {
             None,
             None,
             None,
+            false,
             false,
         );
         assert!(resumed);
@@ -4202,7 +4275,7 @@ mod tests {
     fn grok_spawn_uses_verified_flags_and_preserves_prompt_boundaries() {
         let grok = nebula_core::harness::builtin("grok").unwrap();
         assert_eq!(
-            agent_spawn_command_with(&grok, None, None, None, None, None, None, None, false),
+            agent_spawn_command_with(&grok, None, None, None, None, None, None, None, false, false),
             ("grok".into(), vec![], false)
         );
         let (program, args, resumed) = agent_spawn_command_with(
@@ -4214,6 +4287,7 @@ mod tests {
             None,
             Some("fix the bug; keep this as one argument"),
             Some("Review only PR #42"),
+            false,
             false,
         );
         assert_eq!(program, "grok");
@@ -4254,6 +4328,7 @@ mod tests {
             Some("carry on"),
             None,
             true,
+            false,
         );
         assert!(resumed);
         let mut expected = guided(
@@ -4274,6 +4349,7 @@ mod tests {
                 Some("carry on"),
                 None,
                 true,
+                false,
             )
             .1,
             vec!["resume", "sid", "--cd", TEST_CWD, "--yolo", "carry on"]
@@ -4289,6 +4365,7 @@ mod tests {
                 Some("carry on"),
                 None,
                 true,
+                false,
             )
             .1,
             vec!["--resume", "sid", "--force", "carry on"]
@@ -4311,6 +4388,7 @@ mod tests {
                 Some("fix auth"),
                 None,
                 true,
+                false,
             )
             .1,
             expected
@@ -4326,6 +4404,7 @@ mod tests {
                 Some("fix auth"),
                 None,
                 true,
+                false,
             )
             .1,
             vec![
@@ -4348,6 +4427,7 @@ mod tests {
                 Some("fix auth"),
                 None,
                 true,
+                false,
             )
             .1,
             vec!["--force", "fix auth"]
@@ -4367,6 +4447,7 @@ mod tests {
                 Some("carry on"),
                 None,
                 true,
+                false,
             )
             .1,
             expected
@@ -4383,6 +4464,7 @@ mod tests {
                 Some("carry on"),
                 None,
                 true,
+                false,
             ),
             ("/bin/sh".into(), vec!["-i".to_string()], false)
         );
@@ -4406,6 +4488,7 @@ mod tests {
             Some("Fix auth"),
             None,
             true,
+            false,
         );
         assert_eq!(program, "opencode");
         assert_eq!(
@@ -4426,6 +4509,7 @@ mod tests {
             None,
             Some("Fix auth"),
             None,
+            false,
             false,
         );
         assert_eq!(args, vec!["Fix auth".to_string()]);
@@ -4478,6 +4562,7 @@ mod tests {
             Some(&notice),
             None,
             true,
+            false,
         );
         assert_eq!(program, "codex");
         assert!(resumed);
@@ -4515,6 +4600,7 @@ mod tests {
             None,
             Some(&pr_prompt),
             true,
+            false,
         );
         assert!(resumed);
         let prompts = args
@@ -5013,6 +5099,8 @@ mod tests {
                 pr_url: None,
                 issue_url: None,
                 parent_agent_id: None,
+                role: None,
+                unattended: false,
             })
             .await
             .unwrap_err();
@@ -5032,6 +5120,8 @@ mod tests {
                 pr_url: None,
                 issue_url: None,
                 parent_agent_id: None,
+                role: None,
+                unattended: false,
             })
             .await
             .unwrap_err();
@@ -5051,6 +5141,8 @@ mod tests {
                 pr_url: None,
                 issue_url: None,
                 parent_agent_id: None,
+                role: None,
+                unattended: false,
             })
             .await
             .unwrap_err();
@@ -5070,6 +5162,8 @@ mod tests {
                 pr_url: None,
                 issue_url: None,
                 parent_agent_id: None,
+                role: None,
+                unattended: false,
             })
             .await
             .unwrap_err();
@@ -5092,6 +5186,8 @@ mod tests {
             pr_url: Some("https://github.com/o/r/pull/7".into()),
             issue_url: None,
             parent_agent_id: None,
+            role: None,
+            unattended: false,
         };
         for kind in AgentKind::ALL {
             if kind == AgentKind::Custom {
@@ -5257,6 +5353,8 @@ mod tests {
             pr_url: None,
             issue_url: Some("https://github.com/o/r/issues/15".into()),
             parent_agent_id: None,
+            role: None,
+            unattended: false,
         };
         for kind in AgentKind::ALL {
             if kind == AgentKind::Custom {
@@ -5302,6 +5400,8 @@ mod tests {
             pr_url: None,
             issue_url: None,
             parent_agent_id: None,
+            role: None,
+            unattended: false,
         };
         // Validation runs before the worktree lookup, so an unknown
         // worktree is fine here and every failure is the prompt's own.
@@ -5411,6 +5511,8 @@ mod tests {
             pr_url: None,
             issue_url: None,
             parent_agent_id: None,
+            role: None,
+            unattended: false,
         };
 
         let created = |mut events: broadcast::Receiver<ServerEvent>| {
@@ -5544,6 +5646,8 @@ mod tests {
                 issue_url: None,
                 recent_prompts: Vec::new(),
                 parent_agent_id: None,
+                role: None,
+                unattended: false,
             })
             .unwrap();
     }
@@ -5678,6 +5782,8 @@ mod tests {
                 pr_url: None,
                 issue_url: None,
                 parent_agent_id: None,
+                role: None,
+                unattended: false,
             })
             .await
             .unwrap()
@@ -5826,6 +5932,8 @@ mod tests {
                     issue_url: None,
                     recent_prompts: Vec::new(),
                     parent_agent_id: None,
+                    role: None,
+                    unattended: false,
                 },
                 true,
             )

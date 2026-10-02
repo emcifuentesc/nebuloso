@@ -1552,11 +1552,11 @@ impl Config {
         let defaults = serde_json::to_value(Self::default()).map_err(invalid_data)?;
         let mut local_changed = false;
         for (old, new) in RENAMED_KEYS {
-            root.remove(*old);
+            root.shift_remove(*old);
             // An old key the local layer holds stays local under its new
             // name, so the loop below writes the value back there.
             if let Some(held) = local_root.as_mut() {
-                if let Some(value) = held.remove(*old) {
+                if let Some(value) = held.shift_remove(*old) {
                     held.entry(new.to_string()).or_insert(value);
                     local_changed = true;
                 }

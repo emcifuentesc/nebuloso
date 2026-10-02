@@ -54,6 +54,11 @@ pub struct Config {
     /// TUI's Project tab owns the map; the daemon reads the one key in it
     /// that is its to act on, through [`Config::run_command`].
     pub projects: BTreeMap<PathBuf, ProjectConfig>,
+    /// The `orchestration` key as the layers left it (see
+    /// [`nebula_core::orchestration`]), parsed when a worker spawns or
+    /// `nebula roster` asks, through [`Config::orchestration`], so a bad
+    /// entry is refused with its name rather than skipped.
+    pub orchestration: Option<serde_json::Value>,
 }
 
 /// One project's entry under `projects` — the rows of the TUI's Project
@@ -66,6 +71,9 @@ pub struct ProjectConfig {
     /// worktrees, typed into Settings → Project. Empty means the checkout's `.nebula.json`
     /// `run`, as before the row existed.
     pub run_command: String,
+    /// This project's `orchestration` overrides, laid over the user-level
+    /// key by [`Config::orchestration`].
+    pub orchestration: Option<serde_json::Value>,
 }
 
 impl Default for Config {
@@ -78,6 +86,7 @@ impl Default for Config {
             custom_harnesses: Vec::new(),
             harnesses: BTreeMap::new(),
             projects: BTreeMap::new(),
+            orchestration: None,
         }
     }
 }
@@ -125,6 +134,25 @@ impl Config {
             .get(repo_path)
             .map(|p| p.run_command.trim())
             .filter(|c| !c.is_empty())
+    }
+}
+
+impl Config {
+    /// The `orchestration` value for the project at `repo_path`: the
+    /// user-level key with the project's own laid over it.
+    pub fn orchestration(&self, repo_path: &Path) -> Option<serde_json::Value> {
+        let over = self
+            .projects
+            .get(repo_path)
+            .and_then(|p| p.orchestration.clone());
+        match (self.orchestration.clone(), over) {
+            (base, None) => base,
+            (base, Some(over)) => {
+                let mut base = base.unwrap_or_default();
+                nebula_core::orchestration::overlay(&mut base, over);
+                Some(base)
+            }
+        }
     }
 }
 
@@ -278,6 +306,43 @@ mod tests {
         assert_eq!(cfg.run_command(Path::new("/tmp/demo")), None);
         assert_eq!(cfg.worktree_base_branch, "develop");
         assert_eq!(skipped.into_iter().collect::<Vec<_>>(), ["projects"]);
+    }
+
+    /// A project's `orchestration` lays over the user-level key: its
+    /// roster entries replace by key, `null` drops one, and its scalars win.
+    #[test]
+    fn a_projects_orchestration_overrides_the_user_level_key() {
+        let cfg: Config = serde_json::from_str(
+            r#"{"orchestration": {"roster": {"claude": {"kind": "claude"}, "pi": {"kind": "pi"}},
+                                  "max_children": 4},
+                "projects": {"/tmp/demo": {"orchestration": {
+                    "roster": {"pi": null, "codex": {"kind": "codex"}}, "max_children": 2}}}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            cfg.orchestration(Path::new("/tmp/demo")),
+            Some(serde_json::json!({
+                "roster": {"claude": {"kind": "claude"}, "codex": {"kind": "codex"}},
+                "max_children": 2,
+            }))
+        );
+        assert_eq!(
+            cfg.orchestration(Path::new("/tmp/other")),
+            cfg.orchestration,
+            "another project reads the user-level key"
+        );
+        let only_project: Config = serde_json::from_str(
+            r#"{"projects": {"/tmp/demo": {"orchestration": {"max_children": 3}}}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            only_project.orchestration(Path::new("/tmp/demo")),
+            Some(serde_json::json!({"max_children": 3}))
+        );
+        assert_eq!(
+            Config::default().orchestration(Path::new("/tmp/demo")),
+            None
+        );
     }
 
     #[test]

@@ -5611,6 +5611,8 @@ mod tests {
                 issue_url: None,
                 recent_prompts: Vec::new(),
                 parent_agent_id: None,
+                role: None,
+                unattended: false,
             })
             .collect();
         app
@@ -5902,6 +5904,8 @@ mod tests {
             issue_url: None,
             recent_prompts: Vec::new(),
             parent_agent_id: None,
+            role: None,
+            unattended: false,
         });
         app.tree.agents.push(Agent {
             id: AgentId("a2".into()),
@@ -6137,6 +6141,8 @@ mod tests {
                 issue_url: None,
                 recent_prompts: Vec::new(),
                 parent_agent_id: None,
+                role: None,
+                unattended: false,
             });
         }
 

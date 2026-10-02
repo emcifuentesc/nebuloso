@@ -304,6 +304,8 @@ impl Daemon {
             pr_url: Some(pr_url),
             issue_url: None,
             parent_agent_id: None,
+            role: None,
+            unattended: false,
         })
         .await
     }
