@@ -40,7 +40,22 @@ fn main() -> Result<()> {
             nebula_tui::run_rename(title.join(" "), mode)
         }
         Some(Command::Worktree { name, base }) => nebula_tui::run_worktree(name.join(" "), base),
-        Some(Command::Spawn { task, kind }) => nebula_tui::run_spawn(task.join(" "), kind),
+        Some(Command::Spawn {
+            task,
+            kind,
+            child,
+            worktree,
+            base,
+            model,
+            effort,
+        }) => {
+            let child = (child || worktree.is_some()).then(|| nebula_core::ChildSpawn {
+                worktree: worktree.map(|branch| nebula_core::SpawnWorktree { branch, base }),
+                model,
+                effort,
+            });
+            nebula_tui::run_spawn(task.join(" "), kind, child)
+        }
         Some(Command::Open { files }) => nebula_tui::run_open(files),
         Some(Command::Browser {
             port,

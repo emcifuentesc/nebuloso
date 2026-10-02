@@ -4461,3 +4461,101 @@ exit 0
     wait_for_exit(&mut daemon);
     assert_eq!(runs(), "1");
 }
+
+/// `nebula spawn --worktree` from inside a session: the worker gets its own
+/// checkout on disk, its row names the caller as its parent, stdout is the
+/// one JSON line an orchestrator parses, and the worker itself is refused
+/// workers of its own. A plain `nebula spawn` still prints its prose.
+#[tokio::test]
+async fn spawn_worktree_starts_a_parented_worker_in_a_new_checkout() {
+    let env = TestEnv::new();
+    let repo = env.make_repo();
+    let mut daemon = env.spawn_daemon_with_agent_cmd("/bin/cat");
+    let mut c = connect(&env.sock()).await;
+    handshake(&mut c).await;
+    let main_worktree = add_project_get_main_worktree(&mut c, &repo).await;
+    write_frame(
+        &mut c,
+        &ClientRequest::CreateAgent {
+            req_id: 2,
+            worktree: main_worktree.id.clone(),
+            name: "lead".into(),
+            kind: AgentKind::Claude,
+            custom_harness: None,
+            model: None,
+            effort: None,
+            auto_title: false,
+            cloud_prompt: None,
+            starting_prompt: None,
+            issue_url: None,
+        },
+    )
+    .await
+    .unwrap();
+    let events = read_events_until(&mut c, EVENT_TIMEOUT, |evs| find_ack(evs, 2).is_some()).await;
+    let Some(ServerEvent::Ack {
+        created: Some(EntityId::Agent(lead)),
+        ..
+    }) = find_ack(&events, 2)
+    else {
+        panic!("CreateAgent failed: {events:#?}");
+    };
+    let spawn = |agent: &str, args: &[&str]| {
+        env.cli()
+            .arg("spawn")
+            .args(args)
+            .env(env::AGENT_ID, agent)
+            .output()
+            .unwrap()
+    };
+
+    let out = spawn(
+        lead.as_str(),
+        &["--worktree", "feat-a", "--base", "main", "write the tests"],
+    );
+    assert!(out.status.success(), "child spawn failed: {out:?}");
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    assert_eq!(stdout.lines().count(), 1, "exactly one line: {stdout:?}");
+    let line: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
+    assert_eq!(line["branch"], "feat-a");
+    let path = PathBuf::from(line["worktree"].as_str().unwrap());
+    assert!(
+        path.is_absolute() && path.is_dir(),
+        "{path:?} is a checkout"
+    );
+    let worker = line["id"].as_str().unwrap().to_string();
+
+    let events = read_events_until(&mut c, EVENT_TIMEOUT, |evs| {
+        evs.iter().any(|e| matches!(e, ServerEvent::EntityUpserted { entity: Entity::Agent(a) } if a.id.as_str() == worker))
+    })
+    .await;
+    let row = events
+        .iter()
+        .find_map(|e| match e {
+            ServerEvent::EntityUpserted {
+                entity: Entity::Agent(a),
+            } if a.id.as_str() == worker => Some(a.clone()),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(row.parent_agent_id.as_ref(), Some(lead));
+    assert_ne!(row.worktree_id, main_worktree.id);
+
+    let out = spawn(&worker, &["--child", "go deeper"]);
+    assert!(!out.status.success(), "a worker's --child must fail");
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("a worker cannot start workers"),
+        "{out:?}"
+    );
+
+    let out = spawn(lead.as_str(), &["review the diff"]);
+    assert!(out.status.success(), "plain spawn failed: {out:?}");
+    assert_eq!(
+        String::from_utf8(out.stdout).unwrap(),
+        "started a new session in this worktree; it is working on that task now and shows in \
+         the sessions list. This session is unaffected — carry on.\n"
+    );
+
+    write_frame(&mut c, &ClientRequest::Shutdown).await.unwrap();
+    wait_for_exit(&mut daemon);
+}

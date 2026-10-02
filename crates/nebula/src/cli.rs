@@ -146,7 +146,13 @@ pub(crate) enum Command {
     /// a new nebula session. The new session starts in the same worktree, on
     /// the task you name as its first prompt, and shows up on the grid on
     /// its own — this session carries on untouched.
+    ///
+    /// With --child or --worktree the new session is this one's worker: it
+    /// records this session as its parent, and the command prints one JSON
+    /// line, {"id":…,"worktree":…,"branch":…}, instead of prose. A worker
+    /// cannot start workers, and a session may have 8 unarchived ones.
     #[command(after_help = SPAWN_EXAMPLES)]
+    #[command(group(clap::ArgGroup::new("child_mode").args(["child", "worktree"]).multiple(true)))]
     Spawn {
         /// The task the new session starts on; multiple words need no quotes.
         #[arg(required = true, num_args = 1..)]
@@ -157,6 +163,24 @@ pub(crate) enum Command {
         /// Defaults to the harness this session is running.
         #[arg(long, value_name = "KIND", value_parser = parse_agent_kind)]
         kind: Option<nebula_core::AgentKind>,
+        /// Start the new session as this one's worker.
+        #[arg(long)]
+        child: bool,
+        /// Start the worker in a new worktree on this branch (implies
+        /// --child). The branch must not exist yet.
+        #[arg(long, value_name = "BRANCH")]
+        worktree: Option<String>,
+        /// Start point for the --worktree branch, resolved like `nebula
+        /// worktree --base` (default: the `worktree_base_branch` setting,
+        /// else origin's default branch, fetched).
+        #[arg(long, value_name = "REF", requires = "worktree")]
+        base: Option<String>,
+        /// Model for the worker's CLI, instead of this session's.
+        #[arg(long, value_name = "MODEL", requires = "child_mode")]
+        model: Option<String>,
+        /// Reasoning effort for the worker's CLI, instead of this session's.
+        #[arg(long, value_name = "EFFORT", requires = "child_mode")]
+        effort: Option<String>,
     },
     /// Show files to the user inside this nebula.
     ///
@@ -335,7 +359,9 @@ Examples:
 const SPAWN_EXAMPLES: &str = "\
 Examples:
   nebula spawn \"port the tests to the new fixture\"
-  nebula spawn --kind codex \"review the diff on this branch\"";
+  nebula spawn --kind codex \"review the diff on this branch\"
+  nebula spawn --worktree fix-login --base main \"fix the login redirect\"
+  nebula spawn --child --model sonnet \"summarize the open issues\"";
 
 const OPEN_EXAMPLES: &str = "\
 Examples:
