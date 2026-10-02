@@ -1,6 +1,6 @@
 //! The `orchestration` settings key: the ROSTER of harnesses a lead may
-//! start as workers (`nebula spawn --role <key>`), and how many it may run
-//! at once.
+//! start as workers (`nebula spawn --role <key>`), how many it may run at
+//! once, and how many review rounds an orchestrator's cross-review takes.
 //!
 //! The key layers like no other setting. The first layer to set a `roster`
 //! — `config.json`, then `config.local.json`, then the project's
@@ -22,6 +22,8 @@ use std::ops::RangeInclusive;
 
 pub const DEFAULT_MAX_CHILDREN: usize = 8;
 pub const MAX_CHILDREN_RANGE: RangeInclusive<usize> = 1..=32;
+pub const DEFAULT_MAX_ROUNDS: usize = 3;
+pub const MAX_ROUNDS_RANGE: RangeInclusive<usize> = 1..=10;
 
 /// The harnesses the default roster offers, in its order, each only when
 /// its CLI is installed. Muse and Grok have no hooks, so a lead could never
@@ -43,6 +45,14 @@ pub enum Role {
 }
 
 impl Role {
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "implement" => Some(Role::Implement),
+            "review" => Some(Role::Review),
+            _ => None,
+        }
+    }
+
     pub fn as_str(self) -> &'static str {
         match self {
             Role::Implement => "implement",
@@ -185,6 +195,8 @@ impl<'de> Deserialize<'de> for Roster {
 pub struct Orchestration {
     pub roster: Roster,
     pub max_children: usize,
+    #[serde(default)]
+    pub cross_review: CrossReview,
 }
 
 impl Default for Orchestration {
@@ -192,6 +204,22 @@ impl Default for Orchestration {
         Self {
             roster: Roster::default(),
             max_children: DEFAULT_MAX_CHILDREN,
+            cross_review: CrossReview::default(),
+        }
+    }
+}
+
+/// How an orchestrator's implement / review loop is bounded.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CrossReview {
+    /// Reviews before the orchestrator stops and reports what is left.
+    pub max_rounds: usize,
+}
+
+impl Default for CrossReview {
+    fn default() -> Self {
+        Self {
+            max_rounds: DEFAULT_MAX_ROUNDS,
         }
     }
 }
@@ -212,19 +240,21 @@ impl Orchestration {
             Some(Value::Object(obj)) => obj,
             Some(_) => return Err("orchestration: not an object".into()),
         };
-        let max_children = match obj.get("max_children") {
-            None | Some(Value::Null) => DEFAULT_MAX_CHILDREN,
-            Some(value) => value
-                .as_u64()
-                .and_then(|n| usize::try_from(n).ok())
-                .filter(|n| MAX_CHILDREN_RANGE.contains(n))
-                .ok_or_else(|| {
-                    format!(
-                        "orchestration: max_children must be {} to {} (got {value})",
-                        MAX_CHILDREN_RANGE.start(),
-                        MAX_CHILDREN_RANGE.end()
-                    )
-                })?,
+        let max_children = bounded(
+            obj,
+            "max_children",
+            DEFAULT_MAX_CHILDREN,
+            MAX_CHILDREN_RANGE,
+        )?;
+        let max_rounds = match obj.get("cross_review") {
+            None | Some(Value::Null) => DEFAULT_MAX_ROUNDS,
+            Some(Value::Object(cross_review)) => bounded(
+                cross_review,
+                "cross_review.max_rounds",
+                DEFAULT_MAX_ROUNDS,
+                MAX_ROUNDS_RANGE,
+            )?,
+            Some(_) => return Err("orchestration: cross_review is not an object".into()),
         };
         let roster = match obj.get("roster") {
             None | Some(Value::Null) => default_roster(registry, installed),
@@ -240,7 +270,33 @@ impl Orchestration {
         Ok(Self {
             roster,
             max_children,
+            cross_review: CrossReview { max_rounds },
         })
+    }
+}
+
+/// The count at `path`'s last segment in `obj`: `default` when unset or
+/// null, else a whole number in `range`.
+fn bounded(
+    obj: &Map<String, Value>,
+    path: &str,
+    default: usize,
+    range: RangeInclusive<usize>,
+) -> Result<usize, String> {
+    let key = path.rsplit('.').next().unwrap_or(path);
+    match obj.get(key) {
+        None | Some(Value::Null) => Ok(default),
+        Some(value) => value
+            .as_u64()
+            .and_then(|n| usize::try_from(n).ok())
+            .filter(|n| range.contains(n))
+            .ok_or_else(|| {
+                format!(
+                    "orchestration: {path} must be {} to {} (got {value})",
+                    range.start(),
+                    range.end()
+                )
+            }),
     }
 }
 
@@ -425,6 +481,31 @@ mod tests {
     }
 
     #[test]
+    fn cross_review_rounds_default_to_three_within_one_to_ten() {
+        let rounds = |raw: Value| resolve(raw).map(|o| o.cross_review.max_rounds);
+        assert_eq!(rounds(json!({})), Ok(DEFAULT_MAX_ROUNDS));
+        assert_eq!(rounds(json!({"cross_review": null})), Ok(3));
+        assert_eq!(
+            rounds(json!({"cross_review": {"max_rounds": null, "later": 1}})),
+            Ok(3),
+            "an unknown key is ignored"
+        );
+        assert_eq!(rounds(json!({"cross_review": {"max_rounds": 10}})), Ok(10));
+        for bad in [json!(0), json!(11), json!("3")] {
+            assert_eq!(
+                rounds(json!({"cross_review": {"max_rounds": bad}})),
+                Err(format!(
+                    "orchestration: cross_review.max_rounds must be 1 to 10 (got {bad})"
+                ))
+            );
+        }
+        assert_eq!(
+            rounds(json!({"cross_review": 3})),
+            Err("orchestration: cross_review is not an object".into())
+        );
+    }
+
+    #[test]
     fn a_custom_harness_in_the_registry_can_be_an_entry() {
         let overrides = BTreeMap::from([(
             "mine".to_string(),
@@ -441,7 +522,8 @@ mod tests {
         assert_eq!(
             serde_json::to_value(&orchestration).unwrap(),
             json!({"roster": {"m": {"kind": "mine", "model": null, "effort": null,
-                "roles": ["implement", "review"], "unattended": false}}, "max_children": 8})
+                "roles": ["implement", "review"], "unattended": false}}, "max_children": 8,
+                "cross_review": {"max_rounds": 3}})
         );
     }
 

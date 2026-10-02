@@ -72,8 +72,9 @@ nebula spawn --child [--role <key>] [--worktree <branch> [--base <ref>]] [--mode
                           # unarchived ones (8 unless the orchestration setting says otherwise)
 nebula roster             # the roster this session's workers start from, resolved for its project,
                           # as one JSON object: {"roster":{"<key>":{"kind","model","effort",
-                          # "roles","unattended"},…},"max_children":N}, entries in the order the
-                          # settings list them; a setting that cannot be used is refused, naming
+                          # "roles","unattended"},…},"max_children":N,
+                          # "cross_review":{"max_rounds":N}} (3 rounds unless set, 1 to 10),
+                          # entries in the order the settings list them; a setting that cannot be used is refused, naming
                           # the entry ("roster entry <key>: unknown kind <kind>")
 nebula children           # this session's unarchived workers as one JSON array, oldest first, of
                           # {"id","name","kind","role","status","status_changed_at",
