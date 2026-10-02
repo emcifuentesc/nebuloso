@@ -44,6 +44,11 @@ pub struct AgentPreset {
     /// left to say. Off, the task is still asked for, but optional.
     #[serde(default)]
     pub skip_task: bool,
+    /// Launch an ORCHESTRATOR: the DAEMON gives the session its
+    /// orchestrator guidance and the project's roster. Only a harness with a
+    /// system-prompt flag (Claude, Pi) can be one.
+    #[serde(default)]
+    pub orchestrator: bool,
 }
 
 impl AgentPreset {
@@ -255,7 +260,20 @@ mod tests {
             prefix: String::new(),
             postfix: String::new(),
             skip_task: false,
+            orchestrator: false,
         }
+    }
+
+    #[test]
+    fn a_preset_is_no_orchestrator_unless_it_says_so() {
+        let plain: AgentPreset = serde_json::from_str(r#"{"name": "x"}"#).unwrap();
+        assert!(!plain.orchestrator);
+        let brain = AgentPreset {
+            orchestrator: true,
+            ..preset("brain", AgentKind::Claude)
+        };
+        let json = serde_json::to_string(&brain).unwrap();
+        assert_eq!(serde_json::from_str::<AgentPreset>(&json).unwrap(), brain);
     }
 
     #[test]

@@ -340,6 +340,9 @@ pub struct AgentPresetEditor {
     /// Launch without asking for a task (`AgentPreset::skip_task`); the
     /// Task row shows it as `ask` / `skip`.
     pub skip_task: bool,
+    /// `AgentPreset::orchestrator`, kept from the preset being edited: the
+    /// form has no row for it.
+    pub orchestrator: bool,
     /// The field with the caret / cycle focus.
     pub field: PresetField,
     /// Type-ahead on the focused choice row (Harness / Model / Effort): the
@@ -373,6 +376,7 @@ impl AgentPresetEditor {
             prefix: TextInput::multiline(),
             postfix: TextInput::multiline(),
             skip_task: false,
+            orchestrator: false,
             field: PresetField::Name,
             area: Rect::default(),
             filter: String::new(),
@@ -406,6 +410,7 @@ impl AgentPresetEditor {
             prefix: TextInput::multiline_with_text(preset.prefix.clone()),
             postfix: TextInput::multiline_with_text(preset.postfix.clone()),
             skip_task: preset.skip_task,
+            orchestrator: preset.orchestrator,
             field: PresetField::Name,
             area: Rect::default(),
             filter: String::new(),
@@ -669,6 +674,7 @@ impl AgentPresetEditor {
             prefix: side(self.text.has_prefix(), &self.prefix),
             postfix: side(self.text.has_postfix(), &self.postfix),
             skip_task: self.skip_task,
+            orchestrator: self.orchestrator,
         }
     }
 
@@ -1649,6 +1655,7 @@ mod tests {
             prefix: prefix.into(),
             postfix: postfix.into(),
             skip_task: false,
+            orchestrator: false,
         }
     }
 

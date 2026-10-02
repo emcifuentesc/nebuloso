@@ -214,6 +214,51 @@ pub(crate) fn open_kind_picker(app: &mut App, picker: KindPicker) {
     }));
 }
 
+/// Shown instead of the orchestrator picker when no enabled harness has a
+/// system-prompt flag to carry an ORCHESTRATOR's guidance.
+pub(crate) const NO_ORCHESTRATOR_FLASH: &str =
+    "no enabled harness can orchestrate — it needs a system prompt flag (claude, pi)";
+
+/// "New orchestrator…": a picker of the enabled harnesses with a
+/// system-prompt flag, Enter on one launching an ORCHESTRATOR in
+/// `worktree` outright.
+pub(crate) fn open_orchestrator_picker(app: &mut App, worktree: WorktreeId) {
+    let cfg = Config::load();
+    let items: Vec<MenuItem> = cfg
+        .offered_harnesses()
+        .into_iter()
+        .filter(|(kind, custom)| {
+            cfg.effective_harness(*kind, custom.as_deref())
+                .system
+                .append_flag
+                .is_some()
+        })
+        .map(|(kind, custom)| {
+            MenuItem::new(
+                harness_label(kind, custom.as_deref()),
+                MenuAction::NewOrchestratorOfKind {
+                    worktree: worktree.clone(),
+                    kind,
+                    custom,
+                },
+            )
+        })
+        .collect();
+    if items.is_empty() {
+        app.flash = Some(NO_ORCHESTRATOR_FLASH.into());
+        return;
+    }
+    app.overlay = Some(Overlay::Menu(ContextMenu {
+        title: Some("New orchestrator".into()),
+        items,
+        at: None,
+        hover: 0,
+        area: ratatui::layout::Rect::default(),
+        parent: None,
+        filter: None,
+    }));
+}
+
 /// The PR SESSION rows a CONTEXT MENU on a PROJECT OPEN PRS GROUP row
 /// offers — `New Claude session`, `New Codex session`, … — one per enabled
 /// harness, and none (no FLASH: the menu's other verbs still apply) when

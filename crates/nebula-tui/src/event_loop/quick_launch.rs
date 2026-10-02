@@ -265,6 +265,7 @@ pub(super) fn draft(
         // A PR SESSION's: the create goes to the PROJECT as a
         // `CreatePrAgent`, and `worktree` only names which.
         pr: launch.pr.clone(),
+        orchestrator: launch.preset.as_ref().is_some_and(|p| p.orchestrator),
         reopen_on_error: Some((PromptKind::QuickPrompt(launch), text)),
         focus_pane,
         placeholder,
@@ -291,6 +292,32 @@ mod tests {
     /// The setting that lands the cursor and the pane on the new session,
     /// for the tests about where it lands.
     const FOLLOW_ON: &str = r#"{"follow_new_session": true}"#;
+
+    #[test]
+    fn an_orchestrator_preset_launches_an_orchestrator() {
+        let worktree = WorktreeId("w".into());
+        let preset = |orchestrator| crate::agent_presets::AgentPreset {
+            name: "brain".into(),
+            kind: AgentKind::Claude,
+            custom_harness: None,
+            model: None,
+            effort: None,
+            prefix: String::new(),
+            postfix: String::new(),
+            skip_task: false,
+            orchestrator,
+        };
+        let launched = |orchestrator| {
+            let launch = crate::quick_prompt::QuickLaunch::of_preset(
+                crate::quick_prompt::QuickTarget::Worktree(worktree.clone()),
+                preset(orchestrator),
+                &crate::config::Config::default(),
+            );
+            super::draft(launch, worktree.clone(), "ship it".into(), true, None).orchestrator
+        };
+        assert!(launched(true));
+        assert!(!launched(false));
+    }
 
     /// The setting turned off, for the tests about a launch that stays put.
     const FOLLOW_OFF: &str = r#"{"follow_new_session": false}"#;
