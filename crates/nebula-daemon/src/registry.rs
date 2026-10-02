@@ -97,6 +97,10 @@ pub(crate) struct CreateAgentSpec {
     pub issue_url: Option<String>,
     /// The session this one is a worker of (`nebula spawn --child`).
     pub parent_agent_id: Option<AgentId>,
+    /// The ROSTER key the worker was started with, and whether its entry
+    /// launches it unattended.
+    pub role: Option<String>,
+    pub unattended: bool,
 }
 
 /// A pre-spawned agent CLI waiting to be adopted by the next CreateAgent for
@@ -1047,6 +1051,8 @@ impl Daemon {
             pr_url,
             issue_url,
             parent_agent_id,
+            role,
+            unattended,
         } = spec;
         let cloud_prompt = match cloud_prompt {
             Some(_) if kind != AgentKind::Claude => {
@@ -1152,6 +1158,8 @@ impl Daemon {
             issue_url: issue_url.clone(),
             recent_prompts: Vec::new(),
             parent_agent_id,
+            role,
+            unattended,
         };
         self.store.insert_agent_with_launch_context(
             &agent,
@@ -1324,6 +1332,8 @@ impl Daemon {
             issue_url: None,
             recent_prompts: Vec::new(),
             parent_agent_id: None,
+            role: None,
+            unattended: false,
         };
         self.spawn_agent_session(&agent, &worktree, DEFAULT_COLS, DEFAULT_ROWS)?;
         tracing::info!(agent = %agent.id, kind = kind.as_str(), worktree = %worktree.branch, "prewarmed agent session");
@@ -5013,6 +5023,8 @@ mod tests {
                 pr_url: None,
                 issue_url: None,
                 parent_agent_id: None,
+                role: None,
+                unattended: false,
             })
             .await
             .unwrap_err();
@@ -5032,6 +5044,8 @@ mod tests {
                 pr_url: None,
                 issue_url: None,
                 parent_agent_id: None,
+                role: None,
+                unattended: false,
             })
             .await
             .unwrap_err();
@@ -5051,6 +5065,8 @@ mod tests {
                 pr_url: None,
                 issue_url: None,
                 parent_agent_id: None,
+                role: None,
+                unattended: false,
             })
             .await
             .unwrap_err();
@@ -5070,6 +5086,8 @@ mod tests {
                 pr_url: None,
                 issue_url: None,
                 parent_agent_id: None,
+                role: None,
+                unattended: false,
             })
             .await
             .unwrap_err();
@@ -5092,6 +5110,8 @@ mod tests {
             pr_url: Some("https://github.com/o/r/pull/7".into()),
             issue_url: None,
             parent_agent_id: None,
+            role: None,
+            unattended: false,
         };
         for kind in AgentKind::ALL {
             if kind == AgentKind::Custom {
@@ -5257,6 +5277,8 @@ mod tests {
             pr_url: None,
             issue_url: Some("https://github.com/o/r/issues/15".into()),
             parent_agent_id: None,
+            role: None,
+            unattended: false,
         };
         for kind in AgentKind::ALL {
             if kind == AgentKind::Custom {
@@ -5302,6 +5324,8 @@ mod tests {
             pr_url: None,
             issue_url: None,
             parent_agent_id: None,
+            role: None,
+            unattended: false,
         };
         // Validation runs before the worktree lookup, so an unknown
         // worktree is fine here and every failure is the prompt's own.
@@ -5411,6 +5435,8 @@ mod tests {
             pr_url: None,
             issue_url: None,
             parent_agent_id: None,
+            role: None,
+            unattended: false,
         };
 
         let created = |mut events: broadcast::Receiver<ServerEvent>| {
@@ -5544,6 +5570,8 @@ mod tests {
                 issue_url: None,
                 recent_prompts: Vec::new(),
                 parent_agent_id: None,
+                role: None,
+                unattended: false,
             })
             .unwrap();
     }
@@ -5678,6 +5706,8 @@ mod tests {
                 pr_url: None,
                 issue_url: None,
                 parent_agent_id: None,
+                role: None,
+                unattended: false,
             })
             .await
             .unwrap()
@@ -5826,6 +5856,8 @@ mod tests {
                     issue_url: None,
                     recent_prompts: Vec::new(),
                     parent_agent_id: None,
+                    role: None,
+                    unattended: false,
                 },
                 true,
             )

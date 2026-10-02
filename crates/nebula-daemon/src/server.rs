@@ -343,6 +343,8 @@ async fn handle_client(daemon: Arc<Daemon>, stream: UnixStream) -> Result<()> {
                             pr_url: None,
                             issue_url,
                             parent_agent_id: None,
+                            role: None,
+                            unattended: false,
                         })
                         .await;
                     if let Some(launch_mode) = launch_mode {

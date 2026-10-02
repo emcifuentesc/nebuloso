@@ -209,6 +209,8 @@ impl Daemon {
             pr_url: None,
             issue_url: None,
             parent_agent_id,
+            role: None,
+            unattended: false,
         })
     }
 
@@ -472,6 +474,8 @@ mod tests {
             issue_url: None,
             recent_prompts: Vec::new(),
             parent_agent_id: None,
+            role: None,
+            unattended: false,
         }
     }
 

@@ -264,6 +264,15 @@ pub struct Agent {
     /// children. The link clears, not the row, when the parent is deleted.
     #[serde(default)]
     pub parent_agent_id: Option<AgentId>,
+    /// The ROSTER key a worker was started with (`nebula spawn --role`), or
+    /// None.
+    #[serde(default)]
+    pub role: Option<String>,
+    /// The worker launches with its harness's `unattended_args`: its roster
+    /// entry said so at spawn. Kept on the row so every respawn and resume
+    /// launches it the same way; a session that is not a worker never has it.
+    #[serde(default)]
+    pub unattended: bool,
 }
 
 impl Agent {

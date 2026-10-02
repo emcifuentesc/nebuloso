@@ -345,6 +345,13 @@ const MIGRATIONS: &[&str] = &[
     ALTER TABLE agents ADD COLUMN report_at INTEGER NOT NULL DEFAULT 0;
     ALTER TABLE agents ADD COLUMN last_send_at INTEGER NOT NULL DEFAULT 0;
     ",
+    // 31: the ROSTER key a worker was started with (`nebula spawn --role`)
+    // and whether its entry launches it unattended. Every existing session
+    // has no role and launches as before.
+    "
+    ALTER TABLE agents ADD COLUMN role TEXT;
+    ALTER TABLE agents ADD COLUMN unattended INTEGER NOT NULL DEFAULT 0;
+    ",
 ];
 
 pub struct Store {
@@ -523,8 +530,8 @@ impl Store {
         issue_url: Option<&str>,
     ) -> Result<()> {
         self.conn.lock().unwrap().execute(
-            "INSERT INTO agents (id, worktree_id, name, status, archived, archived_at, kind, claude_session_id, sort_order, created_at, status_changed_at, model, effort, auto_title_pending, unseen, cloud_session_id, pr_url, issue_url, custom_harness, parent_agent_id)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)",
+            "INSERT INTO agents (id, worktree_id, name, status, archived, archived_at, kind, claude_session_id, sort_order, created_at, status_changed_at, model, effort, auto_title_pending, unseen, cloud_session_id, pr_url, issue_url, custom_harness, parent_agent_id, role, unattended)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22)",
             params![
                 a.id.as_str(),
                 a.worktree_id.as_str(),
@@ -546,6 +553,8 @@ impl Store {
                 issue_url,
                 a.custom_harness,
                 a.parent_agent_id.as_ref().map(AgentId::as_str),
+                a.role,
+                a.unattended as i64,
             ],
         )?;
         Ok(())
@@ -1102,7 +1111,7 @@ const WORKTREE_COLUMNS: &str = "id, project_id, path, branch, is_main, sort_orde
 const AGENT_COLUMNS: &str = "id, worktree_id, name, status, archived, kind, \
                              claude_session_id, sort_order, status_changed_at, model, effort, \
                              archived_at, unseen, cloud_session_id, recent_prompts, custom_harness, \
-                             issue_url, parent_agent_id";
+                             issue_url, parent_agent_id, role, unattended";
 const TERMINAL_COLUMNS: &str = "id, worktree_id, name, sort_order, run_command";
 const LINK_COLUMNS: &str = "id, worktree_id, url, sort_order";
 
@@ -1150,6 +1159,8 @@ fn row_to_agent(r: &rusqlite::Row) -> rusqlite::Result<Agent> {
         recent_prompts: parse_prompts(r.get::<_, Option<String>>(14)?.as_deref()),
         custom_harness: r.get(15)?,
         parent_agent_id: r.get::<_, Option<String>>(17)?.map(AgentId),
+        role: r.get(18)?,
+        unattended: r.get::<_, i64>(19)? != 0,
     })
 }
 
@@ -1249,6 +1260,8 @@ mod tests {
             issue_url: None,
             recent_prompts: Vec::new(),
             parent_agent_id: None,
+            role: None,
+            unattended: false,
         };
         let pr_url = "https://github.com/AgentSystemLabs/nebula/pull/42";
         store
@@ -1274,6 +1287,8 @@ mod tests {
             issue_url: None,
             recent_prompts: Vec::new(),
             parent_agent_id: None,
+            role: None,
+            unattended: false,
         };
         store.insert_agent(&codex_agent).unwrap();
         let cursor_agent = Agent {
@@ -1296,6 +1311,8 @@ mod tests {
             issue_url: None,
             recent_prompts: Vec::new(),
             parent_agent_id: None,
+            role: None,
+            unattended: false,
         };
         store.insert_agent(&cursor_agent).unwrap();
         let issue_url = "https://github.com/AgentSystemLabs/nebula/issues/15";
@@ -1319,6 +1336,8 @@ mod tests {
             issue_url: None,
             recent_prompts: Vec::new(),
             parent_agent_id: None,
+            role: None,
+            unattended: false,
         };
         store
             .insert_agent_with_launch_context(&issue_agent, true, None, Some(issue_url))
@@ -1362,6 +1381,8 @@ mod tests {
             issue_url: None,
             recent_prompts: Vec::new(),
             parent_agent_id: None,
+            role: None,
+            unattended: false,
         };
         store.insert_agent(&custom).unwrap();
         let (_, _, reloaded, _) = store.load_tree().unwrap();
@@ -1599,6 +1620,8 @@ mod tests {
         assert_eq!(agents[0].name, "existing");
         assert_eq!(agents[0].model.as_deref(), Some("opus"));
         assert_eq!(agents[0].parent_agent_id, None);
+        assert_eq!(agents[0].role, None, "31: no role");
+        assert!(!agents[0].unattended, "31: launches as before");
         let version: i64 = store
             .conn
             .lock()
@@ -1656,10 +1679,23 @@ mod tests {
             issue_url: None,
             recent_prompts: Vec::new(),
             parent_agent_id: parent.map(|p| AgentId(p.into())),
+            role: None,
+            unattended: false,
         };
         store.insert_agent(&agent("lead", None)).unwrap();
         store.insert_agent(&agent("w1", Some("lead"))).unwrap();
-        store.insert_agent(&agent("w2", Some("lead"))).unwrap();
+        let w2 = Agent {
+            role: Some("claude".into()),
+            unattended: true,
+            ..agent("w2", Some("lead"))
+        };
+        store.insert_agent(&w2).unwrap();
+        let read = store.get_agent(&w2.id).unwrap().unwrap();
+        assert_eq!(
+            (read.role.as_deref(), read.unattended),
+            (Some("claude"), true),
+            "a worker's role and unattended flag persist for its respawns"
+        );
         assert_eq!(
             store
                 .get_agent(&AgentId("w1".into()))
@@ -1998,6 +2034,8 @@ mod tests {
             issue_url: None,
             recent_prompts: Vec::new(),
             parent_agent_id: None,
+            role: None,
+            unattended: false,
         };
 
         // Default-named session: pending until the agent titles it, and the
@@ -2088,6 +2126,8 @@ mod tests {
                     issue_url: None,
                     recent_prompts: Vec::new(),
                     parent_agent_id: None,
+                    role: None,
+                    unattended: false,
                 },
                 true,
             )
@@ -2220,6 +2260,8 @@ mod tests {
                     issue_url: None,
                     recent_prompts: Vec::new(),
                     parent_agent_id: None,
+                    role: None,
+                    unattended: false,
                 })
                 .unwrap();
         }
@@ -2288,6 +2330,8 @@ mod tests {
                 issue_url: None,
                 recent_prompts: Vec::new(),
                 parent_agent_id: None,
+                role: None,
+                unattended: false,
             };
             store.insert_agent(&agent).unwrap();
             agent.id
@@ -2390,6 +2434,8 @@ mod tests {
                 issue_url: None,
                 recent_prompts: Vec::new(),
                 parent_agent_id: None,
+                role: None,
+                unattended: false,
             })
             .unwrap();
         let entry = |n: usize| PromptEntry {

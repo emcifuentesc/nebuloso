@@ -3721,6 +3721,8 @@ mod tests {
                 issue_url: None,
                 recent_prompts: Vec::new(),
                 parent_agent_id: None,
+                role: None,
+                unattended: false,
             })
             .collect();
         app
@@ -4912,6 +4914,8 @@ mod tests {
                     issue_url: None,
                     recent_prompts: Vec::new(),
                     parent_agent_id: None,
+                    role: None,
+                    unattended: false,
                 },
                 project: "nebula".into(),
                 branch: branch.into(),
@@ -5148,6 +5152,8 @@ mod tests {
             issue_url: None,
             recent_prompts: Vec::new(),
             parent_agent_id: None,
+            role: None,
+            unattended: false,
         };
         let th = Theme::by_name("amber");
         let mut app = App::new();
@@ -5257,6 +5263,8 @@ mod tests {
                 issue_url: None,
                 recent_prompts: Vec::new(),
                 parent_agent_id: None,
+                role: None,
+                unattended: false,
             },
             project: "nebula".into(),
             branch: "feat-x".into(),
@@ -5313,6 +5321,8 @@ mod tests {
                 issue_url: None,
                 recent_prompts: Vec::new(),
                 parent_agent_id: None,
+                role: None,
+                unattended: false,
             },
             project: "nebula".into(),
             branch: "feat-x".into(),
@@ -5464,6 +5474,8 @@ mod tests {
                     issue_url: None,
                     recent_prompts: Vec::new(),
                     parent_agent_id: None,
+                    role: None,
+                    unattended: false,
                 },
                 project: "nebula".into(),
                 branch: "main".into(),
