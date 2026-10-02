@@ -19,6 +19,7 @@
 //! `event_loop::launcher`'s and the drawing `ui::launcher_view`'s.
 
 use crate::app::App;
+use crate::nesting::Nest;
 use crate::pull_request::{Standing, Trouble};
 use crate::quick_prompt::{QuickReturn, QuickTarget};
 use crate::text_input::TextInput;
@@ -35,6 +36,9 @@ pub struct LauncherRow {
     pub branch: String,
     /// The pull request on that branch, when one is known.
     pub pr: Option<RowPr>,
+    /// Where the card sits in its band: under its orchestrator, or
+    /// heading its workers (`crate::nesting`).
+    pub nest: Nest,
 }
 
 /// What a row says about its pull request: the number and title, and the
@@ -157,6 +161,7 @@ fn row_of(
         project: project.name.clone(),
         branch: worktree.branch.clone(),
         pr: row_pr(app, &worktree.id, &project.id, &worktree.branch),
+        nest: Nest::top(),
     })
 }
 
@@ -269,11 +274,17 @@ pub fn bands(app: &App) -> Vec<Band> {
     let rows = rows(app);
     let mut out = Vec::new();
     for w in app.visible_worktrees() {
-        let mut cards: Vec<Card> = rows
+        let listed: Vec<Agent> = rows
             .iter()
             .filter(|r| r.agent.worktree_id == w.id)
-            .cloned()
-            .map(Card::Session)
+            .map(|r| r.agent.clone())
+            .collect();
+        let mut cards: Vec<Card> = crate::nesting::nest(&listed, &app.tree.agents)
+            .into_iter()
+            .filter_map(|(agent, nest)| {
+                let row = rows.iter().find(|r| r.agent.id == agent.id)?.clone();
+                Some(Card::Session(LauncherRow { nest, ..row }))
+            })
             .collect();
         if !app.show_archived {
             cards.extend(

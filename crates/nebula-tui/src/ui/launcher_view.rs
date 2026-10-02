@@ -4924,6 +4924,7 @@ mod tests {
                 project: "nebula".into(),
                 branch: branch.into(),
                 pr: None,
+                nest: crate::nesting::Nest::top(),
             })],
         }
     }
@@ -5170,6 +5171,7 @@ mod tests {
                 project: "nebula".into(),
                 branch: "feat-x".into(),
                 pr: None,
+                nest: crate::nesting::Nest::top(),
             };
             let area = Rect::new(0, 0, 40, crate::launcher::CARD_H);
             let mut terminal =
@@ -5277,6 +5279,7 @@ mod tests {
             project: "nebula".into(),
             branch: "feat-x".into(),
             pr: None,
+            nest: crate::nesting::Nest::top(),
         };
         let th = Theme::by_name("coral");
         let mut app = App::new();
@@ -5337,6 +5340,7 @@ mod tests {
             project: "nebula".into(),
             branch: "feat-x".into(),
             pr: None,
+            nest: crate::nesting::Nest::top(),
         };
         let th = Theme::by_name("coral");
         let mut app = App::new();
@@ -5492,6 +5496,7 @@ mod tests {
                 project: "nebula".into(),
                 branch: "main".into(),
                 pr: None,
+                nest: crate::nesting::Nest::top(),
             }
         }
 

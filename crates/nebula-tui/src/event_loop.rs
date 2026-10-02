@@ -4882,9 +4882,16 @@ fn open_delete_all_confirm(app: &mut App) {
             }
             // The rows are the selected worktree's: a `D` that takes every
             // live card there asks about the checkout in the same dialog.
+            // Its orchestrators' WORKERS nested under them run elsewhere,
+            // and are not this checkout's cards.
+            let here = app.selected_worktree().map(|w| w.id.clone());
             let live_taken = agents
                 .iter()
-                .filter(|id| app.tree.agents.iter().any(|a| &a.id == *id && !a.archived))
+                .filter(|id| {
+                    app.tree.agents.iter().any(|a| {
+                        &a.id == *id && !a.archived && Some(&a.worktree_id) == here.as_ref()
+                    })
+                })
                 .count()
                 + terminals.len();
             let dialog = ConfirmDialog {
