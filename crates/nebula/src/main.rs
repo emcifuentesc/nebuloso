@@ -6,7 +6,8 @@ mod upgrade;
 
 use anyhow::Result;
 use clap::Parser;
-use cli::{Cli, Command, ConfigCommand};
+use cli::{Cli, Command, ConfigCommand, GoalCommand};
+use nebula_core::GoalUpdate;
 use std::path::Path;
 
 fn main() -> Result<()> {
@@ -72,6 +73,18 @@ fn main() -> Result<()> {
         Some(Command::Result { id }) => nebula_tui::run_result(id),
         Some(Command::Roster) => nebula_tui::run_roster(),
         Some(Command::Archive { id }) => nebula_tui::run_archive(id),
+        Some(Command::Goal(goal)) => match goal {
+            GoalCommand::Done { evidence } => nebula_tui::run_goal(
+                None,
+                GoalUpdate::Done {
+                    evidence: evidence.join(" "),
+                },
+            ),
+            GoalCommand::Unachievable { why } => {
+                nebula_tui::run_goal(None, GoalUpdate::Unachievable { why: why.join(" ") })
+            }
+            GoalCommand::Clear { id } => nebula_tui::run_goal(id, GoalUpdate::Clear),
+        },
         Some(Command::Open { files }) => nebula_tui::run_open(files),
         Some(Command::Browser {
             port,

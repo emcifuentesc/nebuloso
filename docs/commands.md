@@ -120,6 +120,18 @@ nebula result <id>        # one JSON object for the worker: {"id","name","kind",
 nebula archive <id>       # archive the worker (its process stops, its max_children slot frees);
                           # prints nothing. Refused, nonzero, for a worker mid-turn ("<id> is
                           # mid-turn; wait first") or one that is not this session's
+nebula goal done <evidence…>
+                          # this orchestrator's goal holds; its Claude turns stop being sent back
+                          # to work. Evidence up to 8 KiB. Refused, nonzero, "no open goal" for a
+                          # session without an open goal (every session that is not an orchestrator)
+nebula goal unachievable <why…>
+                          # the same, for a goal that cannot be met
+nebula goal clear [<id>]  # drop the goal of session <id>, or of this session; prints nothing
+                          # While a goal is open, a Claude orchestrator's Stop is answered with
+                          # {"decision":"block"} naming the condition, up to goal.max_iterations
+                          # times, after which the goal is exhausted and the turn ends. A pi
+                          # orchestrator only reads the goal in its system prompt: pi's extension
+                          # carries no block decision back, so nothing holds its turns.
 nebula open <file>…       # show the files in this nebula's FILE TABS — a modal with one tab per
                           # file, the focused one previewed, Enter editing it (agents run this only
                           # when you ask to see a file; text files only — an image or any other

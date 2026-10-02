@@ -6,7 +6,7 @@ use nebula_core::codec::{read_frame, write_frame};
 use nebula_core::orchestration::Orchestration;
 use nebula_core::{
     env, paths, AgentId, AgentKind, AgentStatus, ChildSpawn, ChildStatus, ClientRequest,
-    EnterOutcome, ServerEvent, WorkerResult, PROTOCOL_VERSION,
+    EnterOutcome, GoalUpdate, ServerEvent, WorkerResult, PROTOCOL_VERSION,
 };
 use std::time::Duration;
 use tokio::net::UnixStream;
@@ -407,7 +407,10 @@ struct Workers {
 
 impl Workers {
     async fn connect(verb: &str) -> Result<Self> {
-        let caller = AgentId(current_agent_id(verb)?);
+        Self::connect_as(AgentId(current_agent_id(verb)?)).await
+    }
+
+    async fn connect_as(caller: AgentId) -> Result<Self> {
         let sock = paths::socket_path();
         let Ok(stream) = try_connect(&sock).await else {
             bail!("no nebula daemon is running — no workers to report");
@@ -500,6 +503,23 @@ impl Workers {
         await_ack(&mut self.conn, req_id).await
     }
 
+    /// Move the caller's GOAL. A refusal is the daemon's message as an
+    /// `Err`.
+    async fn update_goal(&mut self, update: GoalUpdate) -> Result<()> {
+        let req_id = self.next_req_id;
+        self.next_req_id += 1;
+        write_frame(
+            &mut self.conn.stream,
+            &ClientRequest::UpdateGoal {
+                req_id,
+                id: self.caller.clone(),
+                update,
+            },
+        )
+        .await?;
+        await_ack(&mut self.conn, req_id).await
+    }
+
     /// Worker `child`'s report and checkout. A refusal is the daemon's
     /// message as an `Err`.
     async fn result(&mut self, child: AgentId) -> Result<WorkerResult> {
@@ -572,6 +592,17 @@ pub async fn print_roster() -> Result<()> {
 /// nothing; a refusal is a nonzero exit with the daemon's message.
 pub async fn report(text: String, pr_url: Option<String>) -> Result<()> {
     Workers::connect("report").await?.report(text, pr_url).await
+}
+
+/// CLI: `nebula goal done|unachievable|clear`: move the GOAL of `id`, or
+/// of this session without one. Prints nothing; a refusal is a nonzero exit
+/// with the daemon's message.
+pub async fn update_goal(id: Option<AgentId>, update: GoalUpdate) -> Result<()> {
+    let mut workers = match id {
+        Some(id) => Workers::connect_as(id).await?,
+        None => Workers::connect("goal").await?,
+    };
+    workers.update_goal(update).await
 }
 
 /// CLI: `nebula result <id>`, from inside an agent session: this session's

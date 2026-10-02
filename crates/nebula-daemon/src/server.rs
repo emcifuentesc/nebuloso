@@ -541,6 +541,9 @@ async fn handle_client(daemon: Arc<Daemon>, stream: UnixStream) -> Result<()> {
                 ClientRequest::ArchiveChild { req_id, id, child } => {
                     reply_done(&out_tx, req_id, daemon.archive_child(&id, &child)).await;
                 }
+                ClientRequest::UpdateGoal { req_id, id, update } => {
+                    reply_done(&out_tx, req_id, daemon.update_goal(&id, update)).await;
+                }
                 ClientRequest::Report {
                     req_id,
                     id,
