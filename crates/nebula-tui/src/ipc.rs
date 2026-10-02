@@ -343,6 +343,7 @@ pub async fn spawn_sibling_for_current_agent(task: &str, kind: Option<AgentKind>
             id: AgentId(agent_id),
             kind,
             starting_prompt: task.to_string(),
+            child: None,
         },
     )
     .await?;

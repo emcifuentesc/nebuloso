@@ -95,6 +95,8 @@ pub(crate) struct CreateAgentSpec {
     /// The GitHub issue an ISSUE SESSION was launched for (see
     /// `pr_scope::issue_rule`). Persisted like `pr_url`.
     pub issue_url: Option<String>,
+    /// The session this one is a worker of (`nebula spawn --child`).
+    pub parent_agent_id: Option<AgentId>,
 }
 
 /// A pre-spawned agent CLI waiting to be adopted by the next CreateAgent for
@@ -751,16 +753,27 @@ impl Daemon {
         // auto-created one — starts at the `worktree_base_branch` SETTING
         // when one is set (`master`, resolved the same way), else at the
         // fetched `origin/HEAD`; never at this checkout's HEAD.
-        let path = match base {
-            Some(base) => git::add_worktree_off_ref(&project.repo_path, branch, base).await?,
+        // `base_ref` records the ref as resolved here, by name — what the
+        // user or the setting asked for, or `origin/HEAD` — not the commit
+        // git landed on.
+        let (path, base_ref) = match base {
+            Some(base) => (
+                git::add_worktree_off_ref(&project.repo_path, branch, base).await?,
+                base.to_string(),
+            ),
             None => match crate::config::Config::load().worktree_base_branch() {
-                Some(configured) => {
-                    git::add_worktree_off_configured(&project.repo_path, branch, configured).await?
-                }
-                None => git::add_worktree_off_default(&project.repo_path, branch).await?,
+                Some(configured) => (
+                    git::add_worktree_off_configured(&project.repo_path, branch, configured)
+                        .await?,
+                    configured.to_string(),
+                ),
+                None => (
+                    git::add_worktree_off_default(&project.repo_path, branch).await?,
+                    "origin/HEAD".to_string(),
+                ),
             },
         };
-        let worktree = self.register_worktree(project_id, path, branch)?;
+        let worktree = self.register_worktree(project_id, path, branch, Some(base_ref))?;
         // The row is out; the WORKTREE HOOK runs still under the lock, so
         // it is ordered with the operation it belongs to — a delete of
         // this path waits for it, two hooks never overlap — and the Ack
@@ -802,7 +815,7 @@ impl Daemon {
             return Ok(existing);
         }
         let path = git::add_pr_worktree(&project.repo_path, number, head).await?;
-        let worktree = self.register_worktree(project_id, path, head)?;
+        let worktree = self.register_worktree(project_id, path, head, None)?;
         self.run_worktree_hook(WorktreeHook::Create, &project.repo_path, &worktree)
             .await;
         drop(ops);
@@ -816,6 +829,7 @@ impl Daemon {
         project_id: &ProjectId,
         path: PathBuf,
         branch: &str,
+        base_ref: Option<String>,
     ) -> Result<Worktree> {
         let worktree = Worktree {
             id: WorktreeId::generate(),
@@ -824,7 +838,7 @@ impl Daemon {
             branch: branch.to_string(),
             is_main: false,
             sort_order: 0,
-            base_ref: None,
+            base_ref,
         };
         self.store.insert_worktree(&worktree)?;
         self.broadcast(ServerEvent::EntityUpserted {
@@ -1003,6 +1017,7 @@ impl Daemon {
             starting_prompt,
             pr_url,
             issue_url,
+            parent_agent_id,
         } = spec;
         let cloud_prompt = match cloud_prompt {
             Some(_) if kind != AgentKind::Claude => {
@@ -1107,7 +1122,7 @@ impl Daemon {
             alive: false,
             issue_url: issue_url.clone(),
             recent_prompts: Vec::new(),
-            parent_agent_id: None,
+            parent_agent_id,
         };
         self.store.insert_agent_with_launch_context(
             &agent,
@@ -3194,7 +3209,7 @@ fn push_system_prompt(
 /// Validate an AGENT PRESET's composed starting prompt before it becomes the
 /// CLI's positional argument. Same bounds as a cloud task — it crosses the
 /// same login-shell `-c` string and argv — with its own wording.
-fn validate_starting_prompt(raw: &str) -> Result<String> {
+pub(crate) fn validate_starting_prompt(raw: &str) -> Result<String> {
     let text = raw.trim().to_string();
     if text.is_empty() {
         bail!("starting prompt is empty");
@@ -4851,6 +4866,7 @@ mod tests {
                 starting_prompt: None,
                 pr_url: None,
                 issue_url: None,
+                parent_agent_id: None,
             })
             .await
             .unwrap_err();
@@ -4869,6 +4885,7 @@ mod tests {
                 starting_prompt: None,
                 pr_url: None,
                 issue_url: None,
+                parent_agent_id: None,
             })
             .await
             .unwrap_err();
@@ -4887,6 +4904,7 @@ mod tests {
                 starting_prompt: None,
                 pr_url: None,
                 issue_url: None,
+                parent_agent_id: None,
             })
             .await
             .unwrap_err();
@@ -4905,6 +4923,7 @@ mod tests {
                 starting_prompt: None,
                 pr_url: None,
                 issue_url: None,
+                parent_agent_id: None,
             })
             .await
             .unwrap_err();
@@ -4926,6 +4945,7 @@ mod tests {
             starting_prompt: None,
             pr_url: Some("https://github.com/o/r/pull/7".into()),
             issue_url: None,
+            parent_agent_id: None,
         };
         for kind in AgentKind::ALL {
             if kind == AgentKind::Custom {
@@ -5090,6 +5110,7 @@ mod tests {
             starting_prompt: Some("Fix it".into()),
             pr_url: None,
             issue_url: Some("https://github.com/o/r/issues/15".into()),
+            parent_agent_id: None,
         };
         for kind in AgentKind::ALL {
             if kind == AgentKind::Custom {
@@ -5134,6 +5155,7 @@ mod tests {
             starting_prompt: starting.map(String::from),
             pr_url: None,
             issue_url: None,
+            parent_agent_id: None,
         };
         // Validation runs before the worktree lookup, so an unknown
         // worktree is fine here and every failure is the prompt's own.
@@ -5242,6 +5264,7 @@ mod tests {
             starting_prompt: task.map(String::from),
             pr_url: None,
             issue_url: None,
+            parent_agent_id: None,
         };
 
         let created = |mut events: broadcast::Receiver<ServerEvent>| {
@@ -5508,6 +5531,7 @@ mod tests {
                 starting_prompt: None,
                 pr_url: None,
                 issue_url: None,
+                parent_agent_id: None,
             })
             .await
             .unwrap()

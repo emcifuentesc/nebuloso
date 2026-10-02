@@ -303,6 +303,7 @@ impl Daemon {
             starting_prompt,
             pr_url: Some(pr_url),
             issue_url: None,
+            parent_agent_id: None,
         })
         .await
     }
