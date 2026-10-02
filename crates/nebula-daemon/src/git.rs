@@ -335,7 +335,7 @@ async fn origin_branch(repo: &Path, name: &str) -> Option<String> {
 /// Whether the checkout has a local branch called `name`
 /// (`refs/heads/<name>`). Only branches: the setting is a *branch* name,
 /// and a tag or SHA that happened to share it is not what anyone meant.
-async fn local_branch(repo: &Path, name: &str) -> bool {
+pub(crate) async fn local_branch(repo: &Path, name: &str) -> bool {
     let full = format!("refs/heads/{name}");
     git(repo, &["rev-parse", "--verify", "--quiet", &full])
         .await

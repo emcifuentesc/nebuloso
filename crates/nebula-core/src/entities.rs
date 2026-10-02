@@ -176,6 +176,11 @@ pub struct Worktree {
     pub branch: String,
     pub is_main: bool,
     pub sort_order: i64,
+    /// The ref a spawned WORKTREE was cut from (`nebula spawn --worktree`,
+    /// `--base` or the base nebula picked for it); None for a checkout
+    /// nebula found on disk or made before the column existed.
+    #[serde(default)]
+    pub base_ref: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -242,6 +247,11 @@ pub struct Agent {
     /// the bottom. Empty for every row that predates the capture.
     #[serde(default)]
     pub recent_prompts: Vec<PromptEntry>,
+    /// The session that started this one as its worker (`nebula spawn
+    /// --child`), or None. Depth is one: a row with a parent never has
+    /// children. The link clears, not the row, when the parent is deleted.
+    #[serde(default)]
+    pub parent_agent_id: Option<AgentId>,
 }
 
 impl Agent {

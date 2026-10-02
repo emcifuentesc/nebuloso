@@ -7,7 +7,7 @@ use std::path::PathBuf;
 
 /// Bump on any breaking change to these enums. The daemon refuses mismatched
 /// clients; the client then offers a kill-and-restart of the old daemon.
-pub const PROTOCOL_VERSION: u32 = 44;
+pub const PROTOCOL_VERSION: u32 = 45;
 
 /// Max IPC frame size (length prefix sanity bound).
 pub const MAX_FRAME_LEN: u32 = 4 * 1024 * 1024;
@@ -231,11 +231,19 @@ pub enum ClientRequest {
     /// the task at once. The caller's own process is untouched. Answered
     /// with `Ack { created: Some(EntityId::Agent(..)) }`; the row reaches
     /// every TUI as an ordinary `EntityUpserted`.
+    ///
+    /// With `child` the new agent is the caller's WORKER instead
+    /// (`nebula spawn --child`, `--worktree`): it records the caller as its
+    /// parent, may get a worktree of its own and its own model / effort,
+    /// and is answered with `ChildSpawned` so the caller learns where it
+    /// runs.
     SpawnSiblingAgent {
         req_id: u64,
         id: AgentId,
         kind: Option<AgentKind>,
         starting_prompt: String,
+        #[serde(default)]
+        child: Option<ChildSpawn>,
     },
     /// `nebula open <file>…`, run by the agent from inside its own session:
     /// show these files to the user in every attached TUI's FILE TABS —
@@ -397,6 +405,27 @@ pub struct SessionMetrics {
     pub prewarm: Option<PrewarmInfo>,
 }
 
+/// What makes a `SpawnSiblingAgent` a worker of its caller. Everything a
+/// worker may have that a sibling may not lives here, so a worktree
+/// without a parent link cannot be asked for.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChildSpawn {
+    /// A new WORKTREE for the worker; None runs it in the caller's.
+    pub worktree: Option<SpawnWorktree>,
+    /// Model and effort for the worker's CLI, over what it would inherit.
+    pub model: Option<String>,
+    pub effort: Option<String>,
+}
+
+/// The worktree a worker is started in: a branch that must not exist yet,
+/// cut from `base` (resolved like `nebula worktree --base`) or, without
+/// one, from the base every new worktree gets.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SpawnWorktree {
+    pub branch: String,
+    pub base: Option<String>,
+}
+
 /// Where a prewarm-pool spare is homed and what it booted as.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PrewarmInfo {
@@ -468,6 +497,14 @@ pub enum ServerEvent {
     Ack {
         req_id: u64,
         created: Option<EntityId>,
+    },
+    /// Reply to a `SpawnSiblingAgent` with `child`: the worker's id and the
+    /// checkout it runs in, which `nebula spawn` prints for its caller.
+    ChildSpawned {
+        req_id: u64,
+        id: AgentId,
+        worktree: PathBuf,
+        branch: String,
     },
     /// Reply to `EnterWorktree`: the worktree the agent now belongs to, and
     /// what that meant for its process.

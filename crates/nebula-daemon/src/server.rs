@@ -342,6 +342,7 @@ async fn handle_client(daemon: Arc<Daemon>, stream: UnixStream) -> Result<()> {
                             starting_prompt,
                             pr_url: None,
                             issue_url,
+                            parent_agent_id: None,
                         })
                         .await;
                     if let Some(launch_mode) = launch_mode {
@@ -471,29 +472,46 @@ async fn handle_client(daemon: Arc<Daemon>, stream: UnixStream) -> Result<()> {
                     id,
                     kind,
                     starting_prompt,
+                    child,
                 } => {
                     // Logged by mode only — never the prompt text.
+                    let launch_mode = if child.is_some() { "child" } else { "sibling" };
                     let result = daemon
-                        .spawn_sibling_agent(&id, kind, &starting_prompt)
+                        .spawn_sibling_agent(&id, kind, &starting_prompt, child.as_ref())
                         .await;
                     match &result {
-                        Ok(nebula_core::EntityId::Agent(agent)) => tracing::info!(
+                        Ok((agent, _)) => tracing::info!(
                             req_id,
                             agent = %agent,
                             spawned_by = %id,
-                            launch_mode = "sibling",
+                            launch_mode,
                             "agent session spawned"
                         ),
                         Err(error) => tracing::warn!(
                             req_id,
                             error = %error,
                             spawned_by = %id,
-                            launch_mode = "sibling",
+                            launch_mode,
                             "agent session spawn failed"
                         ),
-                        Ok(_) => unreachable!("SpawnSiblingAgent returned a non-agent id"),
                     }
-                    reply(&out_tx, req_id, result.map(Some)).await;
+                    match result {
+                        Ok((agent, worktree)) if child.is_some() => {
+                            let _ = out_tx
+                                .send(ServerEvent::ChildSpawned {
+                                    req_id,
+                                    id: agent,
+                                    worktree: worktree.path,
+                                    branch: worktree.branch,
+                                })
+                                .await;
+                        }
+                        result => {
+                            let created =
+                                result.map(|(agent, _)| Some(nebula_core::EntityId::Agent(agent)));
+                            reply(&out_tx, req_id, created).await;
+                        }
+                    }
                 }
                 ClientRequest::OpenFiles { req_id, id, paths } => {
                     reply_done(&out_tx, req_id, daemon.open_files(&id, paths)).await;

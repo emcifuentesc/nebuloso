@@ -10950,6 +10950,7 @@ mod tests {
                     alive: true,
                     issue_url: None,
                     recent_prompts: Vec::new(),
+                    parent_agent_id: None,
                 }),
             },
         );
@@ -10979,6 +10980,7 @@ mod tests {
                     alive: true,
                     issue_url: None,
                     recent_prompts: Vec::new(),
+                    parent_agent_id: None,
                 }),
             },
         );
@@ -11710,6 +11712,7 @@ mod tests {
                     branch: "main".into(),
                     is_main: true,
                     sort_order: 0,
+                    base_ref: None,
                 }),
             },
         );
@@ -11735,6 +11738,7 @@ mod tests {
                     alive: true,
                     issue_url: None,
                     recent_prompts: Vec::new(),
+                    parent_agent_id: None,
                 }),
             },
         );
@@ -11764,6 +11768,7 @@ mod tests {
                     branch: "main".into(),
                     is_main: true,
                     sort_order: 0,
+                    base_ref: None,
                 }),
             },
         );
@@ -14963,6 +14968,7 @@ diff --git a/src/c.rs b/src/c.rs
                     branch: "feature".into(),
                     is_main: false,
                     sort_order: 1,
+                    base_ref: None,
                 }),
             },
         );
@@ -15163,6 +15169,7 @@ diff --git a/src/c.rs b/src/c.rs
                     branch: "feature".into(),
                     is_main: false,
                     sort_order: 1,
+                    base_ref: None,
                 }),
             },
         );
@@ -15199,6 +15206,7 @@ diff --git a/src/c.rs b/src/c.rs
                     branch: id.into(),
                     is_main: false,
                     sort_order: 1,
+                    base_ref: None,
                 }),
             },
         );
@@ -15721,6 +15729,7 @@ diff --git a/src/c.rs b/src/c.rs
                     alive: true,
                     issue_url: None,
                     recent_prompts: Vec::new(),
+                    parent_agent_id: None,
                 }),
             }
         };
@@ -15776,6 +15785,7 @@ diff --git a/src/c.rs b/src/c.rs
                 alive: true,
                 issue_url: None,
                 recent_prompts: Vec::new(),
+                parent_agent_id: None,
             }),
         };
         // A long-running turn outranks a more recent finish, because a
@@ -15858,6 +15868,7 @@ diff --git a/src/c.rs b/src/c.rs
                 alive: true,
                 issue_url: None,
                 recent_prompts: Vec::new(),
+                parent_agent_id: None,
             }),
         };
         hse(
@@ -15918,6 +15929,7 @@ diff --git a/src/c.rs b/src/c.rs
                     alive: true,
                     issue_url: None,
                     recent_prompts: Vec::new(),
+                    parent_agent_id: None,
                 }),
             },
         );
@@ -15961,6 +15973,7 @@ diff --git a/src/c.rs b/src/c.rs
                     branch: "feature".into(),
                     is_main: false,
                     sort_order: 0,
+                    base_ref: None,
                 }),
             },
         );
@@ -15986,6 +15999,7 @@ diff --git a/src/c.rs b/src/c.rs
                     alive: true,
                     issue_url: None,
                     recent_prompts: Vec::new(),
+                    parent_agent_id: None,
                 }),
             },
         );
@@ -17771,6 +17785,7 @@ diff --git a/src/c.rs b/src/c.rs
                     branch: "feat".into(),
                     is_main: false,
                     sort_order: 1,
+                    base_ref: None,
                 }),
             },
         );
@@ -18189,6 +18204,7 @@ diff --git a/src/c.rs b/src/c.rs
                     alive: false,
                     issue_url: None,
                     recent_prompts: Vec::new(),
+                    parent_agent_id: None,
                 }),
             },
         );
@@ -18714,6 +18730,7 @@ diff --git a/src/c.rs b/src/c.rs
             alive: false,
             issue_url: None,
             recent_prompts: Vec::new(),
+            parent_agent_id: None,
         })
     }
 
@@ -20178,6 +20195,7 @@ diff --git a/src/c.rs b/src/c.rs
                     branch: "feat".into(),
                     is_main: false,
                     sort_order: 0,
+                    base_ref: None,
                 }),
             },
         );
@@ -20201,6 +20219,7 @@ diff --git a/src/c.rs b/src/c.rs
             alive: true,
             issue_url: None,
             recent_prompts: Vec::new(),
+            parent_agent_id: None,
         };
 
         // a1 is the selected session; its upsert lands under w2.
@@ -20392,6 +20411,7 @@ diff --git a/src/c.rs b/src/c.rs
             alive: true,
             issue_url: None,
             recent_prompts: Vec::new(),
+            parent_agent_id: None,
         })
     }
 
@@ -20573,6 +20593,7 @@ diff --git a/src/c.rs b/src/c.rs
             branch: "feat".into(),
             is_main: false,
             sort_order: 0,
+            base_ref: None,
         };
         hse(
             &mut app,
@@ -20808,6 +20829,7 @@ diff --git a/src/c.rs b/src/c.rs
                     branch: "other".into(),
                     is_main: false,
                     sort_order: 1,
+                    base_ref: None,
                 }),
             },
         );
@@ -20965,6 +20987,7 @@ diff --git a/src/c.rs b/src/c.rs
                     branch: "feature".into(),
                     is_main: false,
                     sort_order: 0,
+                    base_ref: None,
                 }),
             },
         );
@@ -21164,6 +21187,7 @@ diff --git a/src/c.rs b/src/c.rs
                     branch: "main".into(),
                     is_main: true,
                     sort_order: 0,
+                    base_ref: None,
                 }),
             },
         );
@@ -21409,6 +21433,7 @@ diff --git a/src/c.rs b/src/c.rs
                         branch: format!("feat-{i}"),
                         is_main: false,
                         sort_order: i,
+                        base_ref: None,
                     }),
                 },
             );
@@ -22096,6 +22121,7 @@ diff --git a/src/c.rs b/src/c.rs
                     branch: "feat-x".into(),
                     is_main: true,
                     sort_order: 0,
+                    base_ref: None,
                 }),
             },
         );
@@ -22121,6 +22147,7 @@ diff --git a/src/c.rs b/src/c.rs
                     alive: true,
                     issue_url: None,
                     recent_prompts: Vec::new(),
+                    parent_agent_id: None,
                 }),
             },
         );
@@ -22146,6 +22173,7 @@ diff --git a/src/c.rs b/src/c.rs
                     alive: false,
                     issue_url: None,
                     recent_prompts: Vec::new(),
+                    parent_agent_id: None,
                 }),
             },
         );
@@ -22459,6 +22487,7 @@ diff --git a/src/c.rs b/src/c.rs
             alive: true,
             issue_url: None,
             recent_prompts: Vec::new(),
+            parent_agent_id: None,
         };
         for a in [
             agent("ask", "w2", AgentStatus::NeedsFeedback, false),
@@ -22545,6 +22574,7 @@ diff --git a/src/c.rs b/src/c.rs
                     branch: "empty".into(),
                     is_main: false,
                     sort_order: 1,
+                    base_ref: None,
                 }),
             },
         );
@@ -22755,6 +22785,7 @@ diff --git a/src/c.rs b/src/c.rs
                     branch: "main".into(),
                     is_main: true,
                     sort_order: 0,
+                    base_ref: None,
                 }),
             },
         );
@@ -22916,6 +22947,7 @@ diff --git a/src/c.rs b/src/c.rs
                     alive: true,
                     issue_url: None,
                     recent_prompts: Vec::new(),
+                    parent_agent_id: None,
                 }),
             },
         );
@@ -25038,6 +25070,7 @@ diff --git a/src/c.rs b/src/c.rs
                         branch: branch.into(),
                         is_main: false,
                         sort_order: 0,
+                        base_ref: None,
                     }),
                 },
             );
@@ -25130,6 +25163,7 @@ diff --git a/src/c.rs b/src/c.rs
                         alive: true,
                         issue_url: None,
                         recent_prompts: Vec::new(),
+                        parent_agent_id: None,
                     }),
                 },
             );
@@ -25179,6 +25213,7 @@ diff --git a/src/c.rs b/src/c.rs
             branch: branch.into(),
             is_main,
             sort_order: 0,
+            base_ref: None,
         })
     }
 
@@ -25203,6 +25238,7 @@ diff --git a/src/c.rs b/src/c.rs
             alive: true,
             issue_url: None,
             recent_prompts: Vec::new(),
+            parent_agent_id: None,
         })
     }
 
@@ -25681,6 +25717,7 @@ diff --git a/src/c.rs b/src/c.rs
                     branch: "main".into(),
                     is_main: true,
                     sort_order: 0,
+                    base_ref: None,
                 }),
             },
         );
@@ -25825,6 +25862,7 @@ diff --git a/src/c.rs b/src/c.rs
                     alive: true,
                     issue_url: None,
                     recent_prompts: Vec::new(),
+                    parent_agent_id: None,
                 }),
             },
         );
@@ -25892,6 +25930,7 @@ diff --git a/src/c.rs b/src/c.rs
                     alive: true,
                     issue_url: None,
                     recent_prompts: Vec::new(),
+                    parent_agent_id: None,
                 }),
             },
         );
@@ -26367,6 +26406,7 @@ diff --git a/src/c.rs b/src/c.rs
                         branch: "pr-7-head".into(),
                         is_main: false,
                         sort_order: 1,
+                        base_ref: None,
                     }),
                 },
             );
@@ -26697,6 +26737,7 @@ diff --git a/src/c.rs b/src/c.rs
                         alive: true,
                         issue_url: None,
                         recent_prompts: Vec::new(),
+                        parent_agent_id: None,
                     }),
                 },
             );
@@ -27750,6 +27791,7 @@ diff --git a/src/c.rs b/src/c.rs
                     branch: branch.into(),
                     is_main: false,
                     sort_order: 1,
+                    base_ref: None,
                 }),
             },
         );
@@ -28126,6 +28168,7 @@ diff --git a/src/c.rs b/src/c.rs
                         alive: true,
                         issue_url: None,
                         recent_prompts: Vec::new(),
+                        parent_agent_id: None,
                     }),
                 },
             );
@@ -30048,6 +30091,7 @@ diff --git a/src/c.rs b/src/c.rs
                     alive: true,
                     issue_url: None,
                     recent_prompts: Vec::new(),
+                    parent_agent_id: None,
                 }),
             },
         );

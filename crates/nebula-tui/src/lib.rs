@@ -100,8 +100,12 @@ pub fn run_open(files: Vec<String>) -> Result<()> {
 /// `nebula spawn "<task>" [--kind <kind>]` — start a new agent session
 /// beside the current one (see `ipc::spawn_sibling_for_current_agent`).
 /// `kind` is the CLI's `--kind`, already parsed where the flag is.
-pub fn run_spawn(task: String, kind: Option<nebula_core::AgentKind>) -> Result<()> {
-    runtime()?.block_on(ipc::spawn_sibling_for_current_agent(&task, kind))
+pub fn run_spawn(
+    task: String,
+    kind: Option<nebula_core::AgentKind>,
+    child: Option<nebula_core::ChildSpawn>,
+) -> Result<()> {
+    runtime()?.block_on(ipc::spawn_sibling_for_current_agent(&task, kind, child))
 }
 
 /// `nebula add <dir>` / bare `nebula <dir>` — register a directory as a

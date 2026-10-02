@@ -4,7 +4,8 @@
 use anyhow::{bail, Context, Result};
 use nebula_core::codec::{read_frame, write_frame};
 use nebula_core::{
-    env, paths, AgentId, AgentKind, ClientRequest, EnterOutcome, ServerEvent, PROTOCOL_VERSION,
+    env, paths, AgentId, AgentKind, ChildSpawn, ClientRequest, EnterOutcome, ServerEvent,
+    PROTOCOL_VERSION,
 };
 use std::time::Duration;
 use tokio::net::UnixStream;
@@ -324,7 +325,16 @@ pub async fn rename_current_agent(title: &str, mode: RenameMode) -> Result<()> {
 /// What this prints is read by the model that ran it, so it says what
 /// happened and that this session carries on. A daemon-side refusal (a
 /// blank task, a missing CLI) is a nonzero exit the model reports.
-pub async fn spawn_sibling_for_current_agent(task: &str, kind: Option<AgentKind>) -> Result<()> {
+///
+/// With `child` (`--child`, `--worktree`) the new agent is this one's
+/// worker, and stdout is exactly one JSON line —
+/// `{"id":…,"worktree":…,"branch":…}` — for the orchestrating model or
+/// script to parse; the prose is for the plain spawn only.
+pub async fn spawn_sibling_for_current_agent(
+    task: &str,
+    kind: Option<AgentKind>,
+    child: Option<ChildSpawn>,
+) -> Result<()> {
     let agent_id = current_agent_id("spawn")?;
     let task = task.trim();
     if task.is_empty() {
@@ -336,6 +346,7 @@ pub async fn spawn_sibling_for_current_agent(task: &str, kind: Option<AgentKind>
     };
     let mut conn = handshake(stream).await?;
     let req_id = ONE_SHOT_REQ_ID;
+    let as_child = child.is_some();
     write_frame(
         &mut conn.stream,
         &ClientRequest::SpawnSiblingAgent {
@@ -343,9 +354,38 @@ pub async fn spawn_sibling_for_current_agent(task: &str, kind: Option<AgentKind>
             id: AgentId(agent_id),
             kind,
             starting_prompt: task.to_string(),
+            child,
         },
     )
     .await?;
+    if as_child {
+        loop {
+            match read_frame::<ServerEvent, _>(&mut conn.stream).await? {
+                Some(ServerEvent::ChildSpawned {
+                    req_id: r,
+                    id,
+                    worktree,
+                    branch,
+                }) if r == req_id => {
+                    println!(
+                        "{}",
+                        serde_json::json!({
+                            "id": id.as_str(),
+                            "worktree": worktree.to_string_lossy(),
+                            "branch": branch,
+                        })
+                    );
+                    return Ok(());
+                }
+                Some(ServerEvent::Error {
+                    req_id: Some(r),
+                    message,
+                }) if r == req_id => bail!("{message}"),
+                Some(_) => continue,
+                None => bail!("{CLOSED_BEFORE_REPLY}"),
+            }
+        }
+    }
     await_ack(&mut conn, req_id).await?;
     let harness = kind.map(|k| format!("{} ", k.as_str())).unwrap_or_default();
     println!(

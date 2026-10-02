@@ -3,13 +3,22 @@
 //! opens on the task as its STARTING PROMPT. The caller's own process is
 //! never touched (unlike `nebula worktree`, nothing here waits on a turn
 //! end), so the model runs it, tells the user, and carries on.
+//!
+//! `nebula spawn --child` / `--worktree` makes the new agent the caller's
+//! WORKER: it records the caller as its parent, can run in a worktree of
+//! its own, and is bounded — one level deep, [`MAX_CHILDREN`] at a time.
 
 use std::sync::Arc;
 
 use anyhow::{bail, Context, Result};
-use nebula_core::{AgentId, AgentKind, EntityId};
+use nebula_core::{AgentId, AgentKind, ChildSpawn, EntityId, SpawnWorktree, Worktree, WorktreeId};
 
-use crate::registry::{CreateAgentSpec, Daemon};
+use crate::git;
+use crate::registry::{validate_starting_prompt, CreateAgentSpec, Daemon};
+
+/// How many unarchived workers one session may have at once. An archived
+/// worker is done with, so it frees its slot.
+pub(crate) const MAX_CHILDREN: usize = 8;
 
 /// What nebula appends to Claude's system prompt so "start a new nebula
 /// session that …" becomes one `nebula spawn` call instead of the model
@@ -42,13 +51,18 @@ impl Daemon {
     /// harness (and model / effort) unless `kind` overrides — a different
     /// CLI cannot take this one's model name — a default `agent-N` name so
     /// AUTO-TITLE applies, and `starting_prompt` as the first prompt (which
-    /// `create_agent` validates). Pure lookup, so it is unit-testable
-    /// without a PTY.
+    /// `create_agent` validates). With `child` it is the caller's worker:
+    /// parented on the caller, with `child`'s model / effort over the
+    /// inherited ones, and refused when the caller is itself a worker, is
+    /// at [`MAX_CHILDREN`], or the worker would be a harness without hooks.
+    /// Its worktree is still the caller's; `spawn_sibling_agent` swaps in a
+    /// new one. Pure lookup, so it is unit-testable without a PTY.
     pub(crate) fn sibling_spec(
         &self,
         id: &AgentId,
         kind: Option<AgentKind>,
         starting_prompt: &str,
+        child: Option<&ChildSpawn>,
     ) -> Result<CreateAgentSpec> {
         let caller = self.store.get_agent(id)?.context("agent not found")?;
         if caller.archived {
@@ -61,7 +75,7 @@ impl Daemon {
             .map(|a| a.name.clone())
             .collect::<Vec<_>>();
         let kind = kind.unwrap_or(caller.kind);
-        let (model, effort) = if kind == caller.kind {
+        let (mut model, mut effort) = if kind == caller.kind {
             (caller.model.clone(), caller.effort.clone())
         } else {
             (None, None)
@@ -73,6 +87,29 @@ impl Daemon {
             caller.custom_harness.clone()
         } else {
             None
+        };
+        let parent_agent_id = match child {
+            None => None,
+            Some(child) => {
+                if caller.parent_agent_id.is_some() {
+                    bail!("a worker cannot start workers");
+                }
+                let running = agents
+                    .iter()
+                    .filter(|a| a.parent_agent_id.as_ref() == Some(id) && !a.archived)
+                    .count();
+                if running >= MAX_CHILDREN {
+                    bail!("child limit reached ({MAX_CHILDREN})");
+                }
+                // The parent learns a worker's turn ended through its hooks;
+                // a harness without them would run unwatched.
+                if kind == AgentKind::Muse {
+                    bail!("muse has no hooks; it cannot be a worker");
+                }
+                model = child.model.clone().or(model);
+                effort = child.effort.clone().or(effort);
+                Some(caller.id.clone())
+            }
         };
         Ok(CreateAgentSpec {
             worktree: caller.worktree_id.clone(),
@@ -86,21 +123,67 @@ impl Daemon {
             starting_prompt: Some(starting_prompt.to_string()),
             pr_url: None,
             issue_url: None,
+            parent_agent_id,
         })
+    }
+
+    /// The new WORKTREE a worker runs in, created in the caller's project
+    /// the way `nebula worktree` creates one (same base resolution, same
+    /// WORKTREE HOOK). A branch that already exists is refused rather than
+    /// checked out: a worker's branch is new work, and reusing one would
+    /// hand it someone else's commits.
+    pub(crate) async fn worker_worktree(
+        self: &Arc<Self>,
+        beside: &WorktreeId,
+        wanted: &SpawnWorktree,
+    ) -> Result<WorktreeId> {
+        let caller_worktree = self
+            .store
+            .get_worktree(beside)?
+            .context("worktree not found")?;
+        let project = self
+            .store
+            .get_project(&caller_worktree.project_id)?
+            .context("project not found")?;
+        if git::local_branch(&project.repo_path, &wanted.branch).await {
+            bail!("branch {} already exists", wanted.branch);
+        }
+        match self
+            .create_worktree(&project.id, &wanted.branch, wanted.base.as_deref())
+            .await?
+        {
+            EntityId::Worktree(id) => Ok(id),
+            other => unreachable!("create_worktree returned {other:?}"),
+        }
     }
 
     /// `nebula spawn`, run by the agent inside its own session: create and
     /// boot a new agent beside it with `starting_prompt` as its first
-    /// prompt. Returns the new row's id; the upsert reaches every client
+    /// prompt — or, with `child`, a worker of it. Returns the new row's id
+    /// and the worktree it runs in; the upsert reaches every client
     /// through the ordinary create path.
     pub async fn spawn_sibling_agent(
         self: &Arc<Self>,
         id: &AgentId,
         kind: Option<AgentKind>,
         starting_prompt: &str,
-    ) -> Result<EntityId> {
-        let spec = self.sibling_spec(id, kind, starting_prompt)?;
-        self.create_agent(spec).await
+        child: Option<&ChildSpawn>,
+    ) -> Result<(AgentId, Worktree)> {
+        let mut spec = self.sibling_spec(id, kind, starting_prompt, child)?;
+        if let Some(wanted) = child.and_then(|c| c.worktree.as_ref()) {
+            // Checked before the checkout exists, so a bad prompt does not
+            // leave a worktree behind.
+            validate_starting_prompt(starting_prompt)?;
+            spec.worktree = self.worker_worktree(&spec.worktree, wanted).await?;
+        }
+        let worktree = self
+            .store
+            .get_worktree(&spec.worktree)?
+            .context("worktree not found")?;
+        match self.create_agent(spec).await? {
+            EntityId::Agent(agent) => Ok((agent, worktree)),
+            other => unreachable!("create_agent returned {other:?}"),
+        }
     }
 }
 
@@ -138,6 +221,7 @@ mod tests {
                     branch: id.into(),
                     is_main,
                     sort_order: 0,
+                    base_ref: None,
                 })
                 .unwrap();
         }
@@ -164,6 +248,7 @@ mod tests {
             alive: false,
             issue_url: None,
             recent_prompts: Vec::new(),
+            parent_agent_id: None,
         }
     }
 
@@ -190,7 +275,12 @@ mod tests {
             .unwrap();
 
         let spec = daemon
-            .sibling_spec(&AgentId("agent-1".into()), None, "Fix the login redirect")
+            .sibling_spec(
+                &AgentId("agent-1".into()),
+                None,
+                "Fix the login redirect",
+                None,
+            )
             .unwrap();
         assert_eq!(spec.worktree.to_string(), "feat");
         assert_eq!(spec.name, "agent-2");
@@ -203,6 +293,255 @@ mod tests {
             Some("Fix the login redirect")
         );
         assert!(spec.cloud_prompt.is_none() && spec.pr_url.is_none() && spec.issue_url.is_none());
+        assert!(
+            spec.parent_agent_id.is_none(),
+            "a plain spawn is no one's worker"
+        );
+    }
+
+    fn child(model: Option<&str>) -> ChildSpawn {
+        ChildSpawn {
+            worktree: None,
+            model: model.map(str::to_string),
+            effort: None,
+        }
+    }
+
+    #[test]
+    fn a_child_is_parented_on_the_caller_with_its_own_model() {
+        let daemon = daemon();
+        daemon
+            .store
+            .insert_agent(&agent("agent-1", "feat", AgentKind::Claude, Some("opus")))
+            .unwrap();
+        let spec = daemon
+            .sibling_spec(
+                &AgentId("agent-1".into()),
+                None,
+                "Port the tests",
+                Some(&child(Some("sonnet"))),
+            )
+            .unwrap();
+        assert_eq!(spec.parent_agent_id, Some(AgentId("agent-1".into())));
+        assert_eq!(
+            spec.worktree.to_string(),
+            "feat",
+            "without --worktree a worker shares the caller's checkout"
+        );
+        assert_eq!(spec.model.as_deref(), Some("sonnet"));
+        assert_eq!(
+            spec.effort.as_deref(),
+            Some("high"),
+            "an effort not overridden is inherited"
+        );
+    }
+
+    #[test]
+    fn a_worker_cannot_start_workers() {
+        let daemon = daemon();
+        daemon
+            .store
+            .insert_agent(&agent("lead", "feat", AgentKind::Claude, None))
+            .unwrap();
+        let mut worker = agent("worker", "feat", AgentKind::Claude, None);
+        worker.parent_agent_id = Some(AgentId("lead".into()));
+        daemon.store.insert_agent(&worker).unwrap();
+        let err = daemon
+            .sibling_spec(&AgentId("worker".into()), None, "x", Some(&child(None)))
+            .err()
+            .expect("depth is capped at one");
+        assert_eq!(err.to_string(), "a worker cannot start workers");
+        // A plain spawn from a worker is still a sibling, as today.
+        assert!(daemon
+            .sibling_spec(&AgentId("worker".into()), None, "x", None)
+            .is_ok());
+    }
+
+    #[test]
+    fn the_ninth_unarchived_child_is_refused() {
+        let daemon = daemon();
+        daemon
+            .store
+            .insert_agent(&agent("lead", "feat", AgentKind::Claude, None))
+            .unwrap();
+        let mut done = agent("done", "feat", AgentKind::Claude, None);
+        done.parent_agent_id = Some(AgentId("lead".into()));
+        done.archived = true;
+        daemon.store.insert_agent(&done).unwrap();
+        for n in 0..MAX_CHILDREN - 1 {
+            let mut worker = agent(&format!("w{n}"), "feat", AgentKind::Claude, None);
+            worker.parent_agent_id = Some(AgentId("lead".into()));
+            daemon.store.insert_agent(&worker).unwrap();
+        }
+        assert!(
+            daemon
+                .sibling_spec(&AgentId("lead".into()), None, "x", Some(&child(None)))
+                .is_ok(),
+            "an archived worker frees its slot"
+        );
+        let mut eighth = agent("w7", "feat", AgentKind::Claude, None);
+        eighth.parent_agent_id = Some(AgentId("lead".into()));
+        daemon.store.insert_agent(&eighth).unwrap();
+        let err = daemon
+            .sibling_spec(&AgentId("lead".into()), None, "x", Some(&child(None)))
+            .err()
+            .expect("eight running workers is the cap");
+        assert_eq!(err.to_string(), "child limit reached (8)");
+    }
+
+    #[test]
+    fn muse_cannot_be_a_worker() {
+        let daemon = daemon();
+        daemon
+            .store
+            .insert_agent(&agent("lead", "feat", AgentKind::Claude, None))
+            .unwrap();
+        let err = daemon
+            .sibling_spec(
+                &AgentId("lead".into()),
+                Some(AgentKind::Muse),
+                "x",
+                Some(&child(None)),
+            )
+            .err()
+            .expect("muse is refused as a worker");
+        assert_eq!(err.to_string(), "muse has no hooks; it cannot be a worker");
+        assert!(
+            daemon
+                .sibling_spec(&AgentId("lead".into()), Some(AgentKind::Muse), "x", None)
+                .is_ok(),
+            "a muse sibling is still fine"
+        );
+    }
+
+    fn git_in(repo: &std::path::Path, args: &[&str]) {
+        let out = std::process::Command::new("git")
+            .arg("-C")
+            .arg(repo)
+            .args(args)
+            .env("GIT_AUTHOR_NAME", "t")
+            .env("GIT_AUTHOR_EMAIL", "t@example.com")
+            .env("GIT_COMMITTER_NAME", "t")
+            .env("GIT_COMMITTER_EMAIL", "t@example.com")
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "git {args:?}: {out:?}");
+    }
+
+    /// A daemon over a real one-commit repo, with `lead` in its root
+    /// worktree.
+    fn daemon_on_repo(root: &std::path::Path) -> Arc<Daemon> {
+        let repo = root.join("repo");
+        std::fs::create_dir(&repo).unwrap();
+        git_in(&repo, &["init", "-b", "main"]);
+        git_in(&repo, &["commit", "--allow-empty", "-m", "init"]);
+        let daemon = Daemon::new(
+            Arc::new(Store::open_in_memory().unwrap()),
+            HookEnv {
+                port: 0,
+                token: String::new(),
+            },
+        );
+        daemon
+            .store
+            .insert_project(&Project {
+                id: ProjectId("p".into()),
+                name: "p".into(),
+                repo_path: repo.clone(),
+                sort_order: 0,
+            })
+            .unwrap();
+        daemon
+            .store
+            .insert_worktree(&Worktree {
+                id: WorktreeId("rt".into()),
+                project_id: ProjectId("p".into()),
+                path: repo,
+                branch: "main".into(),
+                is_main: true,
+                sort_order: 0,
+                base_ref: None,
+            })
+            .unwrap();
+        daemon
+            .store
+            .insert_agent(&agent("lead", "rt", AgentKind::Claude, None))
+            .unwrap();
+        daemon
+    }
+
+    #[tokio::test]
+    async fn a_worker_worktree_is_cut_from_its_base_and_records_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let daemon = daemon_on_repo(&std::fs::canonicalize(tmp.path()).unwrap());
+        let wanted = SpawnWorktree {
+            branch: "feat-a".into(),
+            base: Some("main".into()),
+        };
+        let id = daemon
+            .worker_worktree(&WorktreeId("rt".into()), &wanted)
+            .await
+            .unwrap();
+        let worktree = daemon.store.get_worktree(&id).unwrap().unwrap();
+        assert_eq!(worktree.branch, "feat-a");
+        assert_eq!(worktree.base_ref.as_deref(), Some("main"));
+        assert!(!worktree.is_main);
+        assert!(worktree.path.is_dir(), "the checkout is real");
+
+        let err = daemon
+            .worker_worktree(&WorktreeId("rt".into()), &wanted)
+            .await
+            .unwrap_err();
+        assert_eq!(err.to_string(), "branch feat-a already exists");
+    }
+
+    #[tokio::test]
+    async fn an_existing_branch_is_refused_not_checked_out() {
+        let tmp = tempfile::tempdir().unwrap();
+        let daemon = daemon_on_repo(&std::fs::canonicalize(tmp.path()).unwrap());
+        let repo = daemon
+            .store
+            .get_project(&ProjectId("p".into()))
+            .unwrap()
+            .unwrap()
+            .repo_path;
+        git_in(&repo, &["branch", "taken"]);
+        let err = daemon
+            .worker_worktree(
+                &WorktreeId("rt".into()),
+                &SpawnWorktree {
+                    branch: "taken".into(),
+                    base: None,
+                },
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(err.to_string(), "branch taken already exists");
+        let (_, worktrees, _, _) = daemon.store.load_tree().unwrap();
+        assert_eq!(worktrees.len(), 1, "no checkout was made");
+    }
+
+    /// A child spawn that would fail on its prompt fails before the
+    /// worktree is made, so a retry is not refused for the branch.
+    #[tokio::test]
+    async fn a_blank_prompt_makes_no_worker_worktree() {
+        let tmp = tempfile::tempdir().unwrap();
+        let daemon = daemon_on_repo(&std::fs::canonicalize(tmp.path()).unwrap());
+        let child = ChildSpawn {
+            worktree: Some(SpawnWorktree {
+                branch: "feat-b".into(),
+                base: Some("main".into()),
+            }),
+            model: None,
+            effort: None,
+        };
+        let err = daemon
+            .spawn_sibling_agent(&AgentId("lead".into()), None, "  ", Some(&child))
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("is empty"), "{err}");
+        let (_, worktrees, _, _) = daemon.store.load_tree().unwrap();
+        assert_eq!(worktrees.len(), 1, "no checkout was made");
     }
 
     #[test]
@@ -217,6 +556,7 @@ mod tests {
                 &AgentId("agent-1".into()),
                 Some(AgentKind::Codex),
                 "Run the tests",
+                None,
             )
             .unwrap();
         assert_eq!(spec.kind, AgentKind::Codex);
@@ -230,6 +570,7 @@ mod tests {
                 &AgentId("agent-1".into()),
                 Some(AgentKind::Claude),
                 "Run the tests",
+                None,
             )
             .unwrap();
         assert_eq!(same.model.as_deref(), Some("opus"));
@@ -241,7 +582,7 @@ mod tests {
         // `CreateAgentSpec` is deliberately not Debug (it carries the
         // prompt), so the Err side is taken by hand.
         let missing = daemon
-            .sibling_spec(&AgentId("nope".into()), None, "x")
+            .sibling_spec(&AgentId("nope".into()), None, "x", None)
             .err()
             .expect("an unknown caller is refused");
         assert!(missing.to_string().contains("agent not found"));
@@ -250,7 +591,7 @@ mod tests {
         archived.archived = true;
         daemon.store.insert_agent(&archived).unwrap();
         let err = daemon
-            .sibling_spec(&AgentId("agent-1".into()), None, "x")
+            .sibling_spec(&AgentId("agent-1".into()), None, "x", None)
             .err()
             .expect("an archived caller is refused");
         assert!(err.to_string().contains("archived"));
@@ -266,7 +607,7 @@ mod tests {
             .insert_agent(&agent("agent-1", "feat", AgentKind::Claude, None))
             .unwrap();
         let err = daemon
-            .spawn_sibling_agent(&AgentId("agent-1".into()), None, " \n ")
+            .spawn_sibling_agent(&AgentId("agent-1".into()), None, " \n ", None)
             .await
             .unwrap_err();
         assert!(err.to_string().contains("is empty"), "{err}");

@@ -3697,6 +3697,7 @@ mod tests {
                 branch: "feat".into(),
                 is_main: false,
                 sort_order: 0,
+                base_ref: None,
             })
             .collect();
         app.tree.agents = (0..2)
@@ -3719,6 +3720,7 @@ mod tests {
                 alive: true,
                 issue_url: None,
                 recent_prompts: Vec::new(),
+                parent_agent_id: None,
             })
             .collect();
         app
@@ -4230,6 +4232,7 @@ mod tests {
                 branch: format!("feat-{i}"),
                 is_main: false,
                 sort_order: i as i64,
+                base_ref: None,
             })
             .collect();
         app.tree.agents = (0..count)
@@ -4908,6 +4911,7 @@ mod tests {
                     alive: true,
                     issue_url: None,
                     recent_prompts: Vec::new(),
+                    parent_agent_id: None,
                 },
                 project: "nebula".into(),
                 branch: branch.into(),
@@ -5143,6 +5147,7 @@ mod tests {
             alive: true,
             issue_url: None,
             recent_prompts: Vec::new(),
+            parent_agent_id: None,
         };
         let th = Theme::by_name("amber");
         let mut app = App::new();
@@ -5251,6 +5256,7 @@ mod tests {
                 alive: true,
                 issue_url: None,
                 recent_prompts: Vec::new(),
+                parent_agent_id: None,
             },
             project: "nebula".into(),
             branch: "feat-x".into(),
@@ -5306,6 +5312,7 @@ mod tests {
                 alive: true,
                 issue_url: None,
                 recent_prompts: Vec::new(),
+                parent_agent_id: None,
             },
             project: "nebula".into(),
             branch: "feat-x".into(),
@@ -5456,6 +5463,7 @@ mod tests {
                     alive: true,
                     issue_url: None,
                     recent_prompts: Vec::new(),
+                    parent_agent_id: None,
                 },
                 project: "nebula".into(),
                 branch: "main".into(),

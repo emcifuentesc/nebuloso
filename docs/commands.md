@@ -59,6 +59,12 @@ nebula spawn <task> [--kind <claude|codex|cursor|pi|muse|grok|opencode>]  # star
                           # one, in the same worktree, opening on <task> (agents run this when you
                           # ask for a new nebula session; --kind defaults to this session's harness;
                           # custom harnesses launch from the TUI picker and presets, not --kind)
+nebula spawn --child [--worktree <branch> [--base <ref>]] [--model <m>] [--effort <e>] <task>
+                          # start the new session as this one's worker: it records this session as
+                          # its parent and prints one JSON line, {"id","worktree","branch"};
+                          # --worktree (implies --child) cuts a new branch, which must not exist,
+                          # and runs the worker there, --base resolved as for nebula worktree;
+                          # a worker cannot start workers, and a session may have 8 unarchived ones
 nebula open <file>…       # show the files in this nebula's FILE TABS — a modal with one tab per
                           # file, the focused one previewed, Enter editing it (agents run this only
                           # when you ask to see a file; text files only — an image or any other
