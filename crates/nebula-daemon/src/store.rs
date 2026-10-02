@@ -337,6 +337,14 @@ const MIGRATIONS: &[&str] = &[
     ALTER TABLE agents ADD COLUMN parent_agent_id TEXT REFERENCES agents(id) ON DELETE SET NULL;
     ALTER TABLE worktrees ADD COLUMN base_ref TEXT;
     ",
+    // 30: a worker's last `nebula report`, when it made it, and when its
+    // orchestrator last `nebula send`-ed it a turn (epoch ms, 0 for never)
+    // — a report older than that send is stale.
+    "
+    ALTER TABLE agents ADD COLUMN report TEXT;
+    ALTER TABLE agents ADD COLUMN report_at INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE agents ADD COLUMN last_send_at INTEGER NOT NULL DEFAULT 0;
+    ",
 ];
 
 pub struct Store {
@@ -553,6 +561,45 @@ impl Store {
     /// Issue launch context for an AGENT (an ISSUE SESSION), or None.
     pub fn agent_issue_url(&self, id: &AgentId) -> Result<Option<String>> {
         self.agent_text_column(id, "issue_url")
+    }
+
+    /// A worker's `nebula report`: `text` over any earlier report, stamped
+    /// `at`, and `pr_url` over the row's PR when one is given.
+    pub fn set_agent_report(
+        &self,
+        id: &AgentId,
+        text: &str,
+        at: i64,
+        pr_url: Option<&str>,
+    ) -> Result<()> {
+        self.conn.lock().unwrap().execute(
+            "UPDATE agents SET report = ?2, report_at = ?3, pr_url = COALESCE(?4, pr_url)
+             WHERE id = ?1",
+            params![id.as_str(), text, at, pr_url],
+        )?;
+        Ok(())
+    }
+
+    /// A `nebula send` reached the worker at `at`.
+    pub fn set_agent_last_send_at(&self, id: &AgentId, at: i64) -> Result<()> {
+        self.conn.lock().unwrap().execute(
+            "UPDATE agents SET last_send_at = ?2 WHERE id = ?1",
+            params![id.as_str(), at],
+        )?;
+        Ok(())
+    }
+
+    /// The worker's report, when it made it, and when it was last sent a
+    /// turn; a missing row reads as never either.
+    pub fn agent_report(&self, id: &AgentId) -> Result<(Option<String>, i64, i64)> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt =
+            conn.prepare("SELECT report, report_at, last_send_at FROM agents WHERE id = ?1")?;
+        let mut rows = stmt.query(params![id.as_str()])?;
+        match rows.next()? {
+            Some(row) => Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            None => Ok((None, 0, 0)),
+        }
     }
 
     fn agent_text_column(&self, id: &AgentId, column: &str) -> Result<Option<String>> {
