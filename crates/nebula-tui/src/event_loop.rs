@@ -19,10 +19,11 @@ use crossterm::event::{
     Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
 use futures::StreamExt;
+use nebula_core::orchestration::GoalState;
 use nebula_core::paste::bracketed;
 use nebula_core::{
-    AgentId, AgentKind, ClientRequest, EntityId, ProjectId, ServerEvent, SessionRef, TerminalId,
-    WorktreeId, MAX_CLOUD_PROMPT_BYTES,
+    AgentId, AgentKind, ClientRequest, EntityId, GoalUpdate, ProjectId, ServerEvent, SessionRef,
+    TerminalId, WorktreeId, MAX_CLOUD_PROMPT_BYTES,
 };
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
@@ -3505,6 +3506,11 @@ pub(crate) fn open_prompt(app: &mut App, kind: PromptKind) {
             "posted on the pull request as you, through gh — markdown".into(),
             String::new(),
         ),
+        PromptKind::OrchestratorGoal { .. } => (
+            "New orchestrator · goal".into(),
+            "it keeps working until this holds — empty for no goal".into(),
+            String::new(),
+        ),
         PromptKind::RenameAgent { id } => {
             let current = app
                 .tree
@@ -4953,7 +4959,7 @@ fn menu_items_for_session(a: &nebula_core::Agent) -> Vec<MenuItem> {
             MenuItem::destructive("Delete", MenuAction::DeleteAgent(a.id.clone())),
         ]
     } else {
-        vec![
+        let mut items = vec![
             MenuItem::new(
                 "Attach",
                 MenuAction::Attach(SessionRef::Agent(a.id.clone())),
@@ -4964,7 +4970,14 @@ fn menu_items_for_session(a: &nebula_core::Agent) -> Vec<MenuItem> {
             MenuItem::new("Rename", MenuAction::RenameAgent(a.id.clone())),
             MenuItem::new("Archive", MenuAction::ArchiveAgent(a.id.clone())),
             MenuItem::destructive("Delete", MenuAction::DeleteAgent(a.id.clone())),
-        ]
+        ];
+        if a.goal.as_ref().is_some_and(|g| g.state == GoalState::Open) {
+            items.insert(
+                2,
+                MenuItem::new("Clear goal", MenuAction::ClearGoal(a.id.clone())),
+            );
+        }
+        items
     }
 }
 
@@ -6663,6 +6676,7 @@ fn submit_prompt(app: &mut App, prompt: PromptDialog, out: &mut Vec<ClientReques
         PromptKind::NewWorktree { .. }
         | PromptKind::RenameProject { .. }
         | PromptKind::SettingText { .. }
+        | PromptKind::OrchestratorGoal { .. }
         | PromptKind::AgentPresetTask { .. } => true,
         PromptKind::QuickPrompt(launch) => launch.launches_empty(),
         _ => false,
@@ -6801,6 +6815,25 @@ fn submit_prompt(app: &mut App, prompt: PromptDialog, out: &mut Vec<ClientReques
             if matches!(send_turn(app, &id, &value, out), TurnSent::Booting) {
                 open_follow_up(app, id, value);
             }
+        }
+        PromptKind::OrchestratorGoal {
+            worktree,
+            kind,
+            custom,
+        } => {
+            let harness = crate::config::Config::load().effective_harness(kind, custom.as_deref());
+            let model = harness.default_model().map(str::to_string);
+            let effort = harness.default_effort().map(str::to_string);
+            create_agent(
+                app,
+                AgentLaunchDraft {
+                    custom,
+                    orchestrator: true,
+                    goal: (!value.is_empty()).then_some(value),
+                    ..AgentLaunchDraft::new(worktree, kind, model, effort)
+                },
+                out,
+            );
         }
         PromptKind::RenameAgent { id } => optimistic::rename_agent(app, id, value, out),
         PromptKind::RenameTerminal { id } => optimistic::rename_terminal(app, id, value, out),
@@ -7073,6 +7106,11 @@ fn run_menu_action(app: &mut App, action: MenuAction, out: &mut Vec<ClientReques
         MenuAction::SendCloudMessage(id) => open_prompt(app, PromptKind::CloudMessage { id }),
         MenuAction::DuplicateAgent(id) => launcher::duplicate_agent(app, id),
         MenuAction::RenameAgent(id) => open_prompt(app, PromptKind::RenameAgent { id }),
+        MenuAction::ClearGoal(id) => send(app, out, |req_id| ClientRequest::UpdateGoal {
+            req_id,
+            id,
+            update: GoalUpdate::Clear,
+        }),
         MenuAction::ArchiveAgent(id) => archive_agent(app, id),
         MenuAction::UnarchiveAgent(id) => activate::unarchive(app, id, out),
         MenuAction::DeleteAgent(id) => {
@@ -7092,20 +7130,14 @@ fn run_menu_action(app: &mut App, action: MenuAction, out: &mut Vec<ClientReques
             worktree,
             kind,
             custom,
-        } => {
-            let harness = crate::config::Config::load().effective_harness(kind, custom.as_deref());
-            let model = harness.default_model().map(str::to_string);
-            let effort = harness.default_effort().map(str::to_string);
-            create_agent(
-                app,
-                AgentLaunchDraft {
-                    custom,
-                    orchestrator: true,
-                    ..AgentLaunchDraft::new(worktree, kind, model, effort)
-                },
-                out,
-            );
-        }
+        } => open_prompt(
+            app,
+            PromptKind::OrchestratorGoal {
+                worktree,
+                kind,
+                custom,
+            },
+        ),
         MenuAction::NewTerminal(worktree) => create_terminal(app, worktree, out),
         MenuAction::RenameTerminal(id) => open_prompt(app, PromptKind::RenameTerminal { id }),
         MenuAction::CloseTerminal(id) => {
@@ -8319,6 +8351,7 @@ fn create_agent(app: &mut App, draft: AgentLaunchDraft, out: &mut Vec<ClientRequ
         placeholder,
         follow,
         orchestrator,
+        goal,
     } = draft;
     // A PR SESSION is addressed to the PROJECT, not to a checkout: the
     // DAEMON runs it in the PR head branch's own worktree, creating that
@@ -8455,7 +8488,7 @@ fn create_agent(app: &mut App, draft: AgentLaunchDraft, out: &mut Vec<ClientRequ
             starting_prompt,
             issue_url,
             orchestrator,
-            goal: None,
+            goal,
         },
     });
     // The create consumes (or, off-spec, discards) the worktree's warm
@@ -17455,6 +17488,43 @@ diff --git a/src/c.rs b/src/c.rs
     }
 
     #[test]
+    fn clear_goal_is_offered_on_an_open_goal_and_sends_the_clear() {
+        use nebula_core::orchestration::{Goal, GoalState};
+        let mut app = App::new();
+        seed_tree(&mut app);
+        let mut a = app.tree.agents[0].clone();
+        let offers = |a: &nebula_core::Agent| {
+            menu_items_for_session(a)
+                .iter()
+                .any(|item| item.label == "Clear goal")
+        };
+        assert!(!offers(&a), "no goal");
+        for (state, offered) in [
+            (GoalState::Open, true),
+            (GoalState::Done, false),
+            (GoalState::Exhausted, false),
+        ] {
+            a.goal = Some(Goal {
+                condition: "tests pass".into(),
+                state,
+                iterations: 0,
+                max_iterations: 10,
+                evidence: None,
+            });
+            assert_eq!(offers(&a), offered, "{state:?}");
+        }
+        let mut out = Vec::new();
+        run_menu_action(&mut app, MenuAction::ClearGoal(a.id.clone()), &mut out);
+        assert!(
+            matches!(
+                out.as_slice(),
+                [ClientRequest::UpdateGoal { id, update: GoalUpdate::Clear, .. }] if *id == a.id
+            ),
+            "{out:?}"
+        );
+    }
+
+    #[test]
     fn new_orchestrator_offers_harnesses_with_a_system_prompt_flag_and_launches_one() {
         with_config_json("{}", || {
             let mut app = App::new();
@@ -17471,6 +17541,22 @@ diff --git a/src/c.rs b/src/c.rs
 
             press(&mut app, KeyCode::Char('j'), KeyModifiers::NONE, &mut out);
             press(&mut app, KeyCode::Enter, KeyModifiers::NONE, &mut out);
+            assert!(
+                matches!(
+                    &app.overlay,
+                    Some(Overlay::Prompt(PromptDialog {
+                        kind: PromptKind::OrchestratorGoal {
+                            kind: AgentKind::Pi,
+                            ..
+                        },
+                        ..
+                    }))
+                ),
+                "the goal box follows the pick: {:?}",
+                app.overlay
+            );
+            assert!(out.is_empty(), "{out:?}");
+            press(&mut app, KeyCode::Enter, KeyModifiers::NONE, &mut out);
             assert!(app.overlay.is_none(), "{:?}", app.overlay);
             assert!(
                 matches!(
@@ -17479,8 +17565,33 @@ diff --git a/src/c.rs b/src/c.rs
                         kind: AgentKind::Pi,
                         orchestrator: true,
                         starting_prompt: None,
+                        goal: None,
                         ..
                     }]
+                ),
+                "sent empty, the box launches with no goal: {out:?}"
+            );
+        });
+        with_config_json("{}", || {
+            let mut app = App::new();
+            seed_tree(&mut app);
+            let worktree = app.selected_worktree().unwrap().id.clone();
+            let mut out = Vec::new();
+            run_menu_action(&mut app, MenuAction::NewOrchestrator(worktree), &mut out);
+            press(&mut app, KeyCode::Enter, KeyModifiers::NONE, &mut out);
+            for c in " tests pass ".chars() {
+                press(&mut app, KeyCode::Char(c), KeyModifiers::NONE, &mut out);
+            }
+            press(&mut app, KeyCode::Enter, KeyModifiers::NONE, &mut out);
+            assert!(
+                matches!(
+                    out.as_slice(),
+                    [ClientRequest::CreateAgent {
+                        kind: AgentKind::Claude,
+                        orchestrator: true,
+                        goal: Some(goal),
+                        ..
+                    }, ..] if goal == "tests pass"
                 ),
                 "{out:?}"
             );
