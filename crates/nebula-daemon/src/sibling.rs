@@ -238,7 +238,9 @@ impl Daemon {
         let Some(session) = self.session(&SessionRef::Agent(child.clone())) else {
             bail!("{child} is not running");
         };
-        if agent.status == AgentStatus::Running {
+        // Fresh is still on its starting prompt, and a sent turn whose hook
+        // hasn't landed yet is still coming: typing now would interleave.
+        if !agent.status.is_settled() || self.awaiting_turn(child) {
             bail!("{child} is mid-turn; wait first");
         }
         if let Some(other) = self.store.child_agents(caller)?.into_iter().find(|other| {
@@ -653,6 +655,11 @@ mod tests {
 
         send(&daemon, "w", "next").unwrap();
         assert!(awaiting(&daemon, "w"));
+        assert_eq!(
+            send(&daemon, "w", "and another").unwrap_err().to_string(),
+            "w is mid-turn; wait first",
+            "a second send before the first turn's hook would interleave"
+        );
         let w = AgentId("w".into());
         daemon.apply_hook_event(&w, crate::status::HookEvent::Stop, None);
         assert_eq!(
