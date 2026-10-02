@@ -115,6 +115,12 @@ pub fn run_child_status(ids: Vec<String>, verb: &str) -> Result<()> {
     runtime()?.block_on(ipc::print_child_statuses(ids, verb))
 }
 
+/// `nebula send <id> <text>` — the next turn for one of this session's
+/// workers (see `ipc::send_to_child`).
+pub fn run_send(child: String, text: String) -> Result<()> {
+    runtime()?.block_on(ipc::send_to_child(nebula_core::AgentId(child), text))
+}
+
 /// `nebula wait <id>…` — block until the workers settle and return how
 /// they did as the exit code (see `ipc::wait_for_children`).
 pub fn run_wait(

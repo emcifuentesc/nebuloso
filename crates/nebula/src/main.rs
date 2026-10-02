@@ -62,6 +62,7 @@ fn main() -> Result<()> {
             let exit = nebula_tui::run_wait(ids, any, timeout)?;
             std::process::exit(exit as i32)
         }
+        Some(Command::Send { id, text }) => nebula_tui::run_send(id, text.join(" ")),
         Some(Command::Open { files }) => nebula_tui::run_open(files),
         Some(Command::Browser {
             port,

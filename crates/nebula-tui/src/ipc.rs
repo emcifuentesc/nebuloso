@@ -447,6 +447,24 @@ impl Workers {
             }
         }
     }
+
+    /// `text` as worker `child`'s next turn. A refusal is the daemon's
+    /// message as an `Err`.
+    async fn send(&mut self, child: AgentId, text: String) -> Result<()> {
+        let req_id = self.next_req_id;
+        self.next_req_id += 1;
+        write_frame(
+            &mut self.conn.stream,
+            &ClientRequest::SendToChild {
+                req_id,
+                id: self.caller.clone(),
+                child,
+                text,
+            },
+        )
+        .await?;
+        await_ack(&mut self.conn, req_id).await
+    }
 }
 
 fn print_statuses(children: &[ChildStatus]) -> Result<()> {
@@ -463,6 +481,13 @@ pub async fn print_child_statuses(ids: Vec<AgentId>, verb: &str) -> Result<()> {
     print_statuses(&workers.statuses(&ids).await?)
 }
 
+/// CLI: `nebula send <id> <text>`, from inside an agent session: `text`
+/// as this session's worker `child`'s next turn. Prints nothing; a refusal
+/// is a nonzero exit with the daemon's message.
+pub async fn send_to_child(child: AgentId, text: String) -> Result<()> {
+    Workers::connect("send").await?.send(child, text).await
+}
+
 /// How `nebula wait` ended, as its exit code: distinct per outcome so the
 /// session that ran it can branch without parsing the JSON.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -473,20 +498,21 @@ pub enum WaitExit {
     TimedOut = 12,
 }
 
-/// Whether `nebula wait` is done with these statuses and, if so, how:
-/// once all of them are settled, or with `any` once one is. The verdict
-/// is over the settled ones only, the worst first: a session that died
-/// (Terminated, Disconnected), then one waiting on the user.
-pub fn wait_exit(statuses: &[AgentStatus], any: bool) -> Option<WaitExit> {
-    let settled = statuses
+/// Whether `nebula wait` is done with these workers and, if so, how:
+/// once all of them are settled ([`ChildStatus::is_settled`]), or with
+/// `any` once one is. The verdict is over the settled ones only, the worst
+/// first: a session that died (Terminated, Disconnected), then one waiting
+/// on the user.
+pub fn wait_exit(children: &[ChildStatus], any: bool) -> Option<WaitExit> {
+    let settled = children
         .iter()
-        .copied()
-        .filter(|s| s.is_settled())
+        .filter(|c| c.is_settled())
+        .map(|c| c.status)
         .collect::<Vec<_>>();
     let done = if any {
         !settled.is_empty()
     } else {
-        settled.len() == statuses.len()
+        settled.len() == children.len()
     };
     if !done {
         return None;
@@ -518,8 +544,7 @@ pub async fn wait_for_children(
     let deadline = tokio::time::Instant::now() + timeout;
     loop {
         let children = workers.statuses(&ids).await?;
-        let statuses = children.iter().map(|c| c.status).collect::<Vec<_>>();
-        let exit = wait_exit(&statuses, any)
+        let exit = wait_exit(&children, any)
             .or_else(|| (tokio::time::Instant::now() >= deadline).then_some(WaitExit::TimedOut));
         if let Some(exit) = exit {
             print_statuses(&children)?;
@@ -899,35 +924,68 @@ mod tests {
     #[test]
     fn wait_exit_is_decided_over_the_settled_children() {
         use AgentStatus::*;
-        for (statuses, any, exit) in [
-            (&[Running, Finished][..], false, None),
-            (&[Fresh][..], false, None),
-            (&[Running, Fresh][..], true, None),
-            (&[Finished, Finished][..], false, Some(WaitExit::Settled)),
+        let child = |(status, awaiting_turn): (AgentStatus, bool)| ChildStatus {
+            id: AgentId("w".into()),
+            name: "w".into(),
+            kind: AgentKind::Claude,
+            status,
+            status_changed_at: 0,
+            awaiting_turn,
+            worktree: "/w".into(),
+            branch: "w".into(),
+        };
+        let idle = |s| (s, false);
+        let sent = |s| (s, true);
+        for (workers, any, exit) in [
+            (vec![idle(Running), idle(Finished)], false, None),
+            (vec![idle(Fresh)], false, None),
+            (vec![idle(Running), idle(Fresh)], true, None),
             (
-                &[Finished, NeedsFeedback][..],
+                vec![idle(Finished), idle(Finished)],
+                false,
+                Some(WaitExit::Settled),
+            ),
+            (
+                vec![idle(Finished), idle(NeedsFeedback)],
                 false,
                 Some(WaitExit::NeedsFeedback),
             ),
             (
-                &[NeedsFeedback, Terminated][..],
+                vec![idle(NeedsFeedback), idle(Terminated)],
                 false,
                 Some(WaitExit::Failed),
             ),
-            (&[Finished, Disconnected][..], false, Some(WaitExit::Failed)),
-            (&[Running, Finished][..], true, Some(WaitExit::Settled)),
             (
-                &[Running, NeedsFeedback][..],
+                vec![idle(Finished), idle(Disconnected)],
+                false,
+                Some(WaitExit::Failed),
+            ),
+            (
+                vec![idle(Running), idle(Finished)],
+                true,
+                Some(WaitExit::Settled),
+            ),
+            (
+                vec![idle(Running), idle(NeedsFeedback)],
                 true,
                 Some(WaitExit::NeedsFeedback),
             ),
             (
-                &[Running, Finished, Terminated][..],
+                vec![idle(Running), idle(Finished), idle(Terminated)],
                 true,
                 Some(WaitExit::Failed),
+            ),
+            (vec![sent(Finished)], false, None),
+            (vec![sent(Finished)], true, None),
+            (vec![sent(Finished), idle(Finished)], false, None),
+            (
+                vec![sent(Terminated), idle(NeedsFeedback)],
+                true,
+                Some(WaitExit::NeedsFeedback),
             ),
         ] {
-            assert_eq!(wait_exit(statuses, any), exit, "{statuses:?} any={any}");
+            let children = workers.iter().copied().map(child).collect::<Vec<_>>();
+            assert_eq!(wait_exit(&children, any), exit, "{workers:?} any={any}");
         }
     }
 

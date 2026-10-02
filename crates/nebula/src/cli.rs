@@ -200,7 +200,8 @@ pub(crate) enum Command {
     ///
     /// Run from inside a nebula agent session that started workers with
     /// `nebula spawn --child`. Prints one JSON array, oldest worker first, of
-    /// {"id","name","kind","status","status_changed_at","worktree","branch"};
+    /// {"id","name","kind","status","status_changed_at","awaiting_turn",
+    /// "worktree","branch"};
     /// an archived worker is left out, and no workers prints [].
     #[command(after_help = CHILDREN_EXAMPLES)]
     Children,
@@ -218,7 +219,8 @@ pub(crate) enum Command {
     /// Wait for workers of this session to settle.
     ///
     /// Polls once a second until every worker is settled (finished, needs
-    /// feedback, terminated or disconnected), or with --any until one is,
+    /// feedback, terminated or disconnected, and not awaiting the turn a
+    /// `nebula send` started), or with --any until one is,
     /// then prints the `nebula status` array for all of them. The exit code
     /// says how it went: 12 on timeout; otherwise, over the settled workers,
     /// 11 if one terminated or disconnected, else 10 if one needs feedback,
@@ -234,6 +236,23 @@ pub(crate) enum Command {
         /// Give up after this long: a number with s, m or h.
         #[arg(long, value_name = "DURATION", default_value = "30m", value_parser = parse_duration)]
         timeout: std::time::Duration,
+    },
+    /// Send this session's worker its next turn.
+    ///
+    /// Writes the text down the worker's terminal as though typed into its
+    /// prompt and submitted, then returns at once, printing nothing: run
+    /// `nebula wait` for the turn to end. Refused while the worker is
+    /// mid-turn, while another worker of this session is working in the
+    /// same worktree, when its process is not running, or for a message
+    /// over 32 KiB.
+    #[command(after_help = SEND_EXAMPLES)]
+    Send {
+        /// Worker id, as `nebula spawn --child` printed it.
+        #[arg(value_name = "ID")]
+        id: String,
+        /// The message; multiple words need no quotes.
+        #[arg(required = true, num_args = 1..)]
+        text: Vec<String>,
     },
     /// Show files to the user inside this nebula.
     ///
@@ -430,6 +449,11 @@ Examples:
   nebula wait 01JB7Y3K2Q                       until it settles, up to 30m
   nebula wait --any 01JB7Y3K2Q 01JB7Y4M8R      until the first one does
   nebula wait --timeout 90s 01JB7Y3K2Q";
+
+const SEND_EXAMPLES: &str = "\
+Examples:
+  nebula send 01JB7Y3K2Q now add tests for the parser
+  nebula send 01JB7Y3K2Q \"rebase on main\" && nebula wait 01JB7Y3K2Q";
 
 const OPEN_EXAMPLES: &str = "\
 Examples:
