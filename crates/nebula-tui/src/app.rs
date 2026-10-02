@@ -248,6 +248,15 @@ pub enum MenuAction {
     UnarchiveAgent(AgentId),
     DeleteAgent(AgentId),
     NewAgent(WorktreeId),
+    /// "New orchestrator…": the ORCHESTRATOR picker for this checkout.
+    NewOrchestrator(WorktreeId),
+    /// Orchestrator picker result: launch an ORCHESTRATOR on this harness
+    /// at its configured model and effort.
+    NewOrchestratorOfKind {
+        worktree: WorktreeId,
+        kind: AgentKind,
+        custom: Option<String>,
+    },
     /// Picker result: create an agent of this kind (chains into the NEW
     /// SESSION box — a PR SESSION into its name prompt). `model`/`effort`
     /// are submenu choices: None means the row
@@ -1971,6 +1980,8 @@ pub struct AgentLaunchDraft {
     /// the user navigated away from: the create is born in
     /// `App::left_behind`, so the manual move still outranks the follow.
     pub follow: bool,
+    /// Launch an ORCHESTRATOR (`ClientRequest::CreateAgent::orchestrator`).
+    pub orchestrator: bool,
 }
 
 impl AgentLaunchDraft {
@@ -2003,6 +2014,7 @@ impl AgentLaunchDraft {
             focus_pane: true,
             placeholder: None,
             follow: true,
+            orchestrator: false,
         }
     }
 }
@@ -5613,6 +5625,8 @@ mod tests {
                 parent_agent_id: None,
                 role: None,
                 unattended: false,
+                purpose: None,
+                orchestrator: false,
             })
             .collect();
         app
@@ -5906,6 +5920,8 @@ mod tests {
             parent_agent_id: None,
             role: None,
             unattended: false,
+            purpose: None,
+            orchestrator: false,
         });
         app.tree.agents.push(Agent {
             id: AgentId("a2".into()),
@@ -6143,6 +6159,8 @@ mod tests {
                 parent_agent_id: None,
                 role: None,
                 unattended: false,
+                purpose: None,
+                orchestrator: false,
             });
         }
 

@@ -101,6 +101,10 @@ pub(crate) struct CreateAgentSpec {
     /// launches it unattended.
     pub role: Option<String>,
     pub unattended: bool,
+    /// What the worker was started to do; None for a session that is not one.
+    pub purpose: Option<nebula_core::orchestration::Role>,
+    /// Launch an ORCHESTRATOR (see [`crate::orchestration`]).
+    pub orchestrator: bool,
 }
 
 /// A pre-spawned agent CLI waiting to be adopted by the next CreateAgent for
@@ -137,7 +141,7 @@ pub struct Daemon {
     pub shutdown: tokio_util::sync::CancellationToken,
     /// Serializes worktree create/delete with the background auto-sync so
     /// a checkout is never adopted twice while its row is mid-insert.
-    worktree_ops: tokio::sync::Mutex<()>,
+    pub(crate) worktree_ops: tokio::sync::Mutex<()>,
     /// Warm agent CLIs awaiting adoption, at most one per (worktree, kind).
     prewarmed: Mutex<HashMap<(WorktreeId, AgentKind), PrewarmEntry>>,
     /// Cached `command -v` results per CLI so a missing binary doesn't get
@@ -1053,6 +1057,8 @@ impl Daemon {
             parent_agent_id,
             role,
             unattended,
+            purpose,
+            orchestrator,
         } = spec;
         let cloud_prompt = match cloud_prompt {
             Some(_) if kind != AgentKind::Claude => {
@@ -1091,6 +1097,17 @@ impl Daemon {
         // way at boot.
         let harness = resolve_harness(kind, custom_harness.as_deref())?;
         let program = harness.program.trim().to_string();
+        if orchestrator {
+            if harness.system.append_flag.is_none() {
+                bail!("{}", crate::orchestration::NEEDS_SYSTEM_PROMPT);
+            }
+            if parent_agent_id.is_some() {
+                bail!("an orchestrator cannot be a worker");
+            }
+            if cloud_prompt.is_some() {
+                bail!("an orchestrator cannot run in Claude Cloud");
+            }
+        }
         // A launch that hands the CLI a first prompt is working from the
         // moment it spawns, so the row says so now instead of staying gray
         // until the CLI has booted and its first hook has landed — seconds
@@ -1105,12 +1122,18 @@ impl Daemon {
             .store
             .get_worktree(&worktree_id)?
             .context("worktree not found")?;
+        if orchestrator {
+            // Refuses settings that cannot be used before the row exists,
+            // and leaves the PATH probes its spawn reads cached.
+            self.orchestration_for(&worktree_id).await?;
+        }
         // A warm session for this (worktree, kind) hands over its PTY and
         // its pre-generated id — the CLI booted while the user typed the
         // name, so the create feels instant. A starting prompt rides the
         // CLI's argv, and a spare already booted bare cannot be handed one;
         // neither can it be handed a PR or issue rule.
         let adopted = (cloud_prompt.is_none()
+            && !orchestrator
             && pr_url.is_none()
             && issue_url.is_none()
             && starting_prompt.is_none())
@@ -1160,6 +1183,8 @@ impl Daemon {
             parent_agent_id,
             role,
             unattended,
+            purpose,
+            orchestrator,
         };
         self.store.insert_agent_with_launch_context(
             &agent,
@@ -1334,6 +1359,8 @@ impl Daemon {
             parent_agent_id: None,
             role: None,
             unattended: false,
+            purpose: None,
+            orchestrator: false,
         };
         self.spawn_agent_session(&agent, &worktree, DEFAULT_COLS, DEFAULT_ROWS)?;
         tracing::info!(agent = %agent.id, kind = kind.as_str(), worktree = %worktree.branch, "prewarmed agent session");
@@ -1480,6 +1507,18 @@ impl Daemon {
             }
         }
         self.probe_cli(program).await
+    }
+
+    /// [`Self::cli_available`] as far as the cache already knows, without
+    /// probing: a program never probed counts as missing.
+    pub(crate) fn cli_known_available(&self, program: &str) -> bool {
+        std::env::var(env::AGENT_CMD).is_ok()
+            || self
+                .cli_probes
+                .lock()
+                .unwrap()
+                .get(program)
+                .is_some_and(|(ok, _)| *ok)
     }
 
     /// Fill the availability cache for every harness at boot, off the
@@ -2522,16 +2561,21 @@ impl Daemon {
             branch: &worktree.branch,
         });
         let rule = crate::pr_scope::combined_rule(scope.as_ref(), issue_scope.as_ref());
-        let worker_guidance = agent
-            .parent_agent_id
-            .is_some()
-            .then(|| crate::sibling::worker_guidance(worktree.base_ref.as_deref()));
+        let guidance = if agent.orchestrator {
+            Some(crate::orchestration::orchestrator_guidance(
+                &self.known_orchestration(&worktree.id)?,
+            ))
+        } else {
+            agent.parent_agent_id.is_some().then(|| {
+                crate::sibling::worker_guidance(worktree.base_ref.as_deref(), agent.purpose)
+            })
+        };
         let prompts = spawn_prompts(
             &harness,
             agent.session_id.is_some(),
             rule.as_deref(),
             initial_prompt,
-            worker_guidance.as_deref(),
+            guidance.as_deref(),
         );
         let (program, args, resumed) = match (cloud_task, attach) {
             (Some(task), _) => claude_cloud_spawn_command(
@@ -3121,22 +3165,22 @@ fn relocation_prompt(relocate: bool, worktree: &Worktree) -> Option<String> {
 }
 
 /// A spawn's system and first prompts: the launch rule
-/// ([`crate::pr_scope::launch_prompts`]), then a worker's guidance
-/// ([`crate::sibling::worker_prompts`]), each placed by whether `harness`
-/// maps a system-prompt flag.
+/// ([`crate::pr_scope::launch_prompts`]), then a worker's or an
+/// orchestrator's guidance ([`crate::sibling::worker_prompts`]), each
+/// placed by whether `harness` maps a system-prompt flag.
 fn spawn_prompts(
     harness: &nebula_core::harness::HarnessDescriptor,
     resumed: bool,
     rule: Option<&str>,
     initial: Option<&str>,
-    worker_guidance: Option<&str>,
+    guidance: Option<&str>,
 ) -> crate::pr_scope::LaunchPrompts {
     let system_append = harness.system.append_flag.is_some();
     crate::sibling::worker_prompts(
         crate::pr_scope::launch_prompts(system_append, resumed, rule, initial),
         system_append,
         resumed,
-        worker_guidance,
+        guidance,
     )
 }
 
@@ -4030,7 +4074,7 @@ mod tests {
     /// is what it was before workers existed.
     #[test]
     fn worker_guidance_rides_the_system_flag_or_trails_the_first_prompt() {
-        let guidance = crate::sibling::worker_guidance(Some("origin/main"));
+        let guidance = crate::sibling::worker_guidance(Some("origin/main"), None);
         for kind in AgentKind::ALL {
             if matches!(kind, AgentKind::Custom) {
                 continue;
@@ -4088,15 +4132,38 @@ mod tests {
         }
     }
 
+    /// An orchestrator's guidance and roster ride the system-prompt flag
+    /// after nebula's own; a session that is not one launches byte for
+    /// byte as before.
+    #[test]
+    fn an_orchestrators_guidance_and_roster_ride_the_system_flag() {
+        let guidance = crate::orchestration::orchestrator_guidance(
+            &nebula_core::orchestration::Orchestration::default(),
+        );
+        for kind in [AgentKind::Claude, AgentKind::Pi] {
+            let mut plain = guided("--append-system-prompt", &[]);
+            plain.push("fix the parser".into());
+            assert_eq!(worker_argv(kind, false, None), plain, "{kind:?}");
+            let brain = worker_argv(kind, false, Some(&guidance));
+            assert_eq!(brain.len(), plain.len(), "{kind:?}");
+            assert_eq!(brain[1], format!("{}\n\n{guidance}", plain[1]), "{kind:?}");
+            assert!(brain[1].contains(crate::orchestration::ORCHESTRATOR_GUIDANCE));
+            assert!(brain[1].contains(
+                "Roster:\n{\"roster\":{},\"max_children\":8,\"cross_review\":{\"max_rounds\":3}}"
+            ));
+            assert_eq!(brain.last().unwrap(), "fix the parser");
+        }
+    }
+
     #[test]
     fn worker_guidance_names_the_base_to_open_a_pr_against_when_it_has_one() {
-        let guidance = crate::sibling::worker_guidance(Some("origin/release/2"));
+        let guidance = crate::sibling::worker_guidance(Some("origin/release/2"), None);
         assert!(guidance.starts_with("<nebula-worker-guidance>\n"));
         assert!(guidance.ends_with("\n</nebula-worker-guidance>"));
         assert!(guidance.contains("`nebula report \"<summary>\"`"));
         assert!(guidance.contains("`gh pr create --fill --base release/2`"));
         assert!(!guidance.contains("VERDICT"));
-        let shared = crate::sibling::worker_guidance(None);
+        let shared = crate::sibling::worker_guidance(None, None);
         assert!(shared.contains("`--pr <url>`"));
         assert!(!shared.contains("gh pr create"), "{shared}");
     }
@@ -5101,6 +5168,8 @@ mod tests {
                 parent_agent_id: None,
                 role: None,
                 unattended: false,
+                purpose: None,
+                orchestrator: false,
             })
             .await
             .unwrap_err();
@@ -5122,6 +5191,8 @@ mod tests {
                 parent_agent_id: None,
                 role: None,
                 unattended: false,
+                purpose: None,
+                orchestrator: false,
             })
             .await
             .unwrap_err();
@@ -5143,6 +5214,8 @@ mod tests {
                 parent_agent_id: None,
                 role: None,
                 unattended: false,
+                purpose: None,
+                orchestrator: false,
             })
             .await
             .unwrap_err();
@@ -5164,10 +5237,56 @@ mod tests {
                 parent_agent_id: None,
                 role: None,
                 unattended: false,
+                purpose: None,
+                orchestrator: false,
             })
             .await
             .unwrap_err();
         assert!(wrong_kind.to_string().contains("only supported for Claude"));
+    }
+
+    #[tokio::test]
+    async fn an_orchestrator_needs_a_system_prompt_flag_and_no_parent() {
+        let daemon = test_daemon();
+        let spec = |kind: AgentKind| CreateAgentSpec {
+            worktree: WorktreeId("unused".into()),
+            name: "brain".into(),
+            kind,
+            custom_harness: None,
+            model: None,
+            effort: None,
+            auto_title: false,
+            cloud_prompt: None,
+            starting_prompt: None,
+            pr_url: None,
+            issue_url: None,
+            parent_agent_id: None,
+            role: None,
+            unattended: false,
+            purpose: None,
+            orchestrator: true,
+        };
+        for kind in [AgentKind::Codex, AgentKind::Cursor, AgentKind::OpenCode] {
+            let err = daemon.create_agent(spec(kind)).await.unwrap_err();
+            assert_eq!(
+                err.to_string(),
+                "orchestrator needs a harness with a system prompt flag (claude, pi, grok)"
+            );
+        }
+        for kind in [AgentKind::Claude, AgentKind::Pi] {
+            let err = daemon.create_agent(spec(kind)).await.unwrap_err();
+            assert_eq!(
+                err.to_string(),
+                "worktree not found",
+                "{kind:?} passes, and the missing worktree stops it"
+            );
+        }
+        let worker = CreateAgentSpec {
+            parent_agent_id: Some(AgentId("lead".into())),
+            ..spec(AgentKind::Claude)
+        };
+        let err = daemon.create_agent(worker).await.unwrap_err();
+        assert_eq!(err.to_string(), "an orchestrator cannot be a worker");
     }
 
     #[tokio::test]
@@ -5188,6 +5307,8 @@ mod tests {
             parent_agent_id: None,
             role: None,
             unattended: false,
+            purpose: None,
+            orchestrator: false,
         };
         for kind in AgentKind::ALL {
             if kind == AgentKind::Custom {
@@ -5355,6 +5476,8 @@ mod tests {
             parent_agent_id: None,
             role: None,
             unattended: false,
+            purpose: None,
+            orchestrator: false,
         };
         for kind in AgentKind::ALL {
             if kind == AgentKind::Custom {
@@ -5402,6 +5525,8 @@ mod tests {
             parent_agent_id: None,
             role: None,
             unattended: false,
+            purpose: None,
+            orchestrator: false,
         };
         // Validation runs before the worktree lookup, so an unknown
         // worktree is fine here and every failure is the prompt's own.
@@ -5513,6 +5638,8 @@ mod tests {
             parent_agent_id: None,
             role: None,
             unattended: false,
+            purpose: None,
+            orchestrator: false,
         };
 
         let created = |mut events: broadcast::Receiver<ServerEvent>| {
@@ -5648,6 +5775,8 @@ mod tests {
                 parent_agent_id: None,
                 role: None,
                 unattended: false,
+                purpose: None,
+                orchestrator: false,
             })
             .unwrap();
     }
@@ -5784,6 +5913,8 @@ mod tests {
                 parent_agent_id: None,
                 role: None,
                 unattended: false,
+                purpose: None,
+                orchestrator: false,
             })
             .await
             .unwrap()
@@ -5934,6 +6065,8 @@ mod tests {
                     parent_agent_id: None,
                     role: None,
                     unattended: false,
+                    purpose: None,
+                    orchestrator: false,
                 },
                 true,
             )

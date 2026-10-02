@@ -460,6 +460,7 @@ async fn full_crud_attach_and_restart_persistence() {
             cloud_prompt: None,
             starting_prompt: None,
             issue_url: None,
+            orchestrator: false,
         },
     )
     .await
@@ -893,6 +894,7 @@ async fn hook_post_from_agent_pty_drives_status() {
             cloud_prompt: None,
             starting_prompt: None,
             issue_url: None,
+            orchestrator: false,
         },
     )
     .await
@@ -1232,6 +1234,7 @@ async fn hook_cwd_rehomes_agent_to_other_worktree() {
             cloud_prompt: None,
             starting_prompt: None,
             issue_url: None,
+            orchestrator: false,
         },
     )
     .await
@@ -1360,6 +1363,7 @@ async fn claude_session_title_and_row_name_stay_tied() {
             cloud_prompt: None,
             starting_prompt: None,
             issue_url: None,
+            orchestrator: false,
         },
     )
     .await
@@ -1525,6 +1529,7 @@ async fn restart_rebinds_an_attached_client_to_the_new_pty() {
             cloud_prompt: None,
             starting_prompt: None,
             issue_url: None,
+            orchestrator: false,
         },
     )
     .await
@@ -1661,6 +1666,7 @@ async fn codex_hooks_install_and_drive_status() {
             cloud_prompt: None,
             starting_prompt: None,
             issue_url: None,
+            orchestrator: false,
         },
     )
     .await
@@ -2257,6 +2263,7 @@ async fn prewarmed_session_is_adopted_by_create_agent() {
             cloud_prompt: None,
             starting_prompt: None,
             issue_url: None,
+            orchestrator: false,
         },
     )
     .await
@@ -2405,6 +2412,7 @@ async fn dead_prewarm_falls_back_to_cold_spawn() {
             cloud_prompt: None,
             starting_prompt: None,
             issue_url: None,
+            orchestrator: false,
         },
     )
     .await
@@ -2463,6 +2471,7 @@ async fn create_agent_refuses_when_the_cli_is_not_installed() {
                 cloud_prompt: None,
                 starting_prompt: None,
                 issue_url: None,
+                orchestrator: false,
             },
         )
         .await
@@ -2550,6 +2559,7 @@ async fn create_agent_succeeds_when_the_cli_is_on_the_login_shell_path() {
             cloud_prompt: None,
             starting_prompt: None,
             issue_url: None,
+            orchestrator: false,
         },
     )
     .await
@@ -2622,6 +2632,7 @@ async fn create_agent_get_id(
             cloud_prompt: None,
             starting_prompt: None,
             issue_url: None,
+            orchestrator: false,
         },
     )
     .await
@@ -2791,6 +2802,7 @@ async fn archive_sigkills_an_agent_that_ignores_sighup() {
             cloud_prompt: None,
             starting_prompt: None,
             issue_url: None,
+            orchestrator: false,
         },
     )
     .await
@@ -2931,6 +2943,7 @@ async fn prewarm_worktree_sessions_boots_dead_sessions() {
             cloud_prompt: None,
             starting_prompt: None,
             issue_url: None,
+            orchestrator: false,
         },
     )
     .await
@@ -2979,6 +2992,7 @@ async fn prewarm_worktree_sessions_boots_dead_sessions() {
             cloud_prompt: None,
             starting_prompt: None,
             issue_url: None,
+            orchestrator: false,
         },
     )
     .await
@@ -3096,6 +3110,7 @@ async fn prewarm_worktree_sessions_boots_nothing_when_switched_off() {
             cloud_prompt: None,
             starting_prompt: None,
             issue_url: None,
+            orchestrator: false,
         },
     )
     .await
@@ -3240,6 +3255,7 @@ async fn idle_sessions_reap_unwatched_but_spare_busy_and_attached() {
             cloud_prompt: None,
             starting_prompt: None,
             issue_url: None,
+            orchestrator: false,
         },
     )
     .await
@@ -3566,6 +3582,7 @@ async fn auto_title_instruction_and_rename_flow() {
             cloud_prompt: None,
             starting_prompt: None,
             issue_url: None,
+            orchestrator: false,
         },
     )
     .await
@@ -3769,6 +3786,7 @@ async fn nebula_worktree_cli_relocates_the_session_when_the_turn_ends() {
             cloud_prompt: None,
             starting_prompt: None,
             issue_url: None,
+            orchestrator: false,
         },
     )
     .await
@@ -4039,6 +4057,7 @@ async fn nebula_spawn_cli_starts_a_sibling_session_in_the_same_worktree() {
             cloud_prompt: None,
             starting_prompt: None,
             issue_url: None,
+            orchestrator: false,
         },
     )
     .await
@@ -4294,6 +4313,7 @@ exit 0
             cloud_prompt: Some("  Hello,\n  world  ".into()),
             starting_prompt: None,
             issue_url: None,
+            orchestrator: false,
         },
     )
     .await
@@ -4497,6 +4517,7 @@ async fn roster_prints_the_configured_roster_and_spawn_role_uses_it() {
             cloud_prompt: None,
             starting_prompt: None,
             issue_url: None,
+            orchestrator: false,
         },
     )
     .await
@@ -4519,7 +4540,7 @@ async fn roster_prints_the_configured_roster_and_spawn_role_uses_it() {
             r#"{"roster":{"zeta":{"kind":"claude","model":"opus","effort":"high","#,
             r#""roles":["implement","review"],"unattended":true},"#,
             r#""alpha":{"kind":"pi","model":null,"effort":null,"roles":["review"],"#,
-            r#""unattended":false}},"max_children":3}"#,
+            r#""unattended":false}},"max_children":3,"cross_review":{"max_rounds":3}}"#,
             "\n"
         )
     );
@@ -4568,6 +4589,7 @@ async fn spawn_worktree_starts_a_parented_worker_in_a_new_checkout() {
             cloud_prompt: None,
             starting_prompt: None,
             issue_url: None,
+            orchestrator: false,
         },
     )
     .await
@@ -4680,6 +4702,7 @@ async fn children_status_and_wait_report_the_callers_workers() {
             cloud_prompt: None,
             starting_prompt: None,
             issue_url: None,
+            orchestrator: false,
         },
     )
     .await
@@ -4840,6 +4863,116 @@ async fn a_workers_report_and_checkout_show_in_its_leads_result() {
     assert!(
         String::from_utf8_lossy(&out.stderr)
             .contains("report is for workers; this session has no orchestrator"),
+        "{out:?}"
+    );
+
+    write_frame(&mut c, &ClientRequest::Shutdown).await.unwrap();
+    wait_for_exit(&mut daemon);
+}
+
+/// `nebula spawn --review` over the real binary: once the implementer's
+/// turn has ended, a reviewer starts in its worktree with purpose review;
+/// a second reviewer while the first is still on its starting prompt is
+/// refused, and so is a plain spawn onto the existing branch.
+#[tokio::test]
+async fn a_reviewer_attaches_to_its_settled_implementers_worktree() {
+    let env = TestEnv::new();
+    let repo = env.make_repo();
+    let env_dir = env.tmp.path().join("agent-env");
+    std::fs::create_dir_all(&env_dir).unwrap();
+    let script = env.tmp.path().join("agent.sh");
+    std::fs::write(
+        &script,
+        format!(
+            "#!/bin/sh\nenv | grep '^NEBULA_' > '{0}'/$NEBULA_AGENT_ID.env\nexec cat > /dev/null\n",
+            env_dir.display()
+        ),
+    )
+    .unwrap();
+    make_executable(&script);
+    let mut daemon = env.spawn_daemon_with_agent_cmd(script.to_str().unwrap());
+    let mut c = connect(&env.sock()).await;
+    handshake(&mut c).await;
+    let main_worktree = add_project_get_main_worktree(&mut c, &repo).await;
+    let lead = create_agent_get_id(&mut c, &main_worktree.id, "lead", 2).await;
+    let lead_env = read_env_file(&env_dir.join(format!("{}.env", lead.0))).await;
+    let port: u16 = lead_env[env::API_URL]
+        .rsplit(':')
+        .next()
+        .unwrap()
+        .parse()
+        .unwrap();
+    let token = lead_env[env::API_TOKEN].clone();
+    let spawned = |out: std::process::Output| {
+        assert!(out.status.success(), "spawn failed: {out:?}");
+        serde_json::from_slice::<serde_json::Value>(&out.stdout).unwrap()
+    };
+
+    let implementer = spawned(agent_cli(
+        &env,
+        &lead,
+        &[
+            "spawn",
+            "--worktree",
+            "feat-r",
+            "--base",
+            "main",
+            "write it",
+        ],
+    ));
+    let implementer_id = implementer["id"].as_str().unwrap().to_string();
+    let hook =
+        |event: &str| format!("/api/hooks/claude?agentId={implementer_id}&hookEvent={event}");
+    for event in ["UserPromptSubmit", "Stop"] {
+        let (status, _) = hook_post(port, &hook(event), &token).await;
+        assert_eq!(status, 200, "{event}");
+    }
+    let out = agent_cli(&env, &lead, &["wait", "--timeout", "10s", &implementer_id]);
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+
+    let reviewer = spawned(agent_cli(
+        &env,
+        &lead,
+        &["spawn", "--worktree", "feat-r", "--review", "review feat-r"],
+    ));
+    assert_eq!(reviewer["worktree"], implementer["worktree"]);
+    assert_eq!(reviewer["branch"], "feat-r");
+    let reviewer_id = reviewer["id"].as_str().unwrap().to_string();
+    let out = agent_cli(&env, &lead, &["status", &reviewer_id, &implementer_id]);
+    assert!(out.status.success(), "status failed: {out:?}");
+    let rows: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(rows[0]["purpose"], "review");
+    assert_eq!(rows[1]["purpose"], "implement");
+
+    let out = agent_cli(
+        &env,
+        &lead,
+        &[
+            "spawn",
+            "--worktree",
+            "feat-r",
+            "--review",
+            "review it again",
+        ],
+    );
+    assert!(
+        !out.status.success(),
+        "a second reviewer must wait: {out:?}"
+    );
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains(&format!(
+            "{reviewer_id} is working in this worktree; wait first"
+        )),
+        "{out:?}"
+    );
+    let out = agent_cli(
+        &env,
+        &lead,
+        &["spawn", "--worktree", "feat-r", "write more"],
+    );
+    assert!(!out.status.success(), "only a reviewer attaches: {out:?}");
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("branch feat-r already exists"),
         "{out:?}"
     );
 

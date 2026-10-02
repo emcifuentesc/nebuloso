@@ -70,14 +70,24 @@ nebula spawn --child [--role <key>] [--worktree <branch> [--base <ref>]] [--mode
                           # "role <key> cannot implement" when its roles leave implement out;
                           # a worker cannot start workers, and a session may have max_children
                           # unarchived ones (8 unless the orchestration setting says otherwise)
+nebula spawn --worktree <branch> --review [--role <key>] <task>
+                          # start a reviewer worker in the existing worktree on <branch>: one in
+                          # this project where a worker of this session lives and every such
+                          # worker is settled, else "<id> is working in this worktree; wait
+                          # first" or "branch <b> exists and is not one of your workers'
+                          # worktrees"; it is told to review the branch against its base, change
+                          # nothing and report "VERDICT: APPROVE" or "VERDICT: CHANGES" first;
+                          # a --role must include review ("role <key> cannot review")
 nebula roster             # the roster this session's workers start from, resolved for its project,
                           # as one JSON object: {"roster":{"<key>":{"kind","model","effort",
-                          # "roles","unattended"},…},"max_children":N}, entries in the order the
-                          # settings list them; a setting that cannot be used is refused, naming
+                          # "roles","unattended"},…},"max_children":N,
+                          # "cross_review":{"max_rounds":N}} (3 rounds unless set, 1 to 10),
+                          # entries in the order the settings list them; a setting that cannot be used is refused, naming
                           # the entry ("roster entry <key>: unknown kind <kind>")
 nebula children           # this session's unarchived workers as one JSON array, oldest first, of
-                          # {"id","name","kind","role","status","status_changed_at",
+                          # {"id","name","kind","role","purpose","status","status_changed_at",
                           # "awaiting_turn","worktree","branch"}; role is null without --role;
+                          # purpose is "review" for a --review worker, else "implement";
                           # [] when it has none
 nebula status <id>…       # the same array for these workers, in this order; an id that is not this
                           # session's worker is refused with "<id> is not your worker", nothing printed

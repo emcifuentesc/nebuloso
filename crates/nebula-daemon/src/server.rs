@@ -320,6 +320,7 @@ async fn handle_client(daemon: Arc<Daemon>, stream: UnixStream) -> Result<()> {
                     cloud_prompt,
                     starting_prompt,
                     issue_url,
+                    orchestrator,
                 } => {
                     // Logged by mode only — never the task, prompt text or
                     // issue URL.
@@ -345,6 +346,8 @@ async fn handle_client(daemon: Arc<Daemon>, stream: UnixStream) -> Result<()> {
                             parent_agent_id: None,
                             role: None,
                             unattended: false,
+                            purpose: None,
+                            orchestrator,
                         })
                         .await;
                     if let Some(launch_mode) = launch_mode {

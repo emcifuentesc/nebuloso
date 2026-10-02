@@ -5,6 +5,7 @@
 use crate::session_title::TitleState;
 use anyhow::{Context, Result};
 use nebula_core::clock::now_ms;
+use nebula_core::orchestration::Role;
 use nebula_core::{
     Agent, AgentId, AgentKind, AgentStatus, Link, LinkId, PrSeen, Project, ProjectId, PromptEntry,
     TerminalId, TerminalTab, Worktree, WorktreeId, RECENT_PROMPTS_KEPT,
@@ -352,6 +353,14 @@ const MIGRATIONS: &[&str] = &[
     ALTER TABLE agents ADD COLUMN role TEXT;
     ALTER TABLE agents ADD COLUMN unattended INTEGER NOT NULL DEFAULT 0;
     ",
+    // 32: what a worker was started to do ('implement' or 'review', NULL
+    // for a session that is not a worker) and whether a session is an
+    // ORCHESTRATOR. Every existing worker implements.
+    "
+    ALTER TABLE agents ADD COLUMN purpose TEXT;
+    ALTER TABLE agents ADD COLUMN orchestrator INTEGER NOT NULL DEFAULT 0;
+    UPDATE agents SET purpose = 'implement' WHERE parent_agent_id IS NOT NULL;
+    ",
 ];
 
 pub struct Store {
@@ -530,8 +539,8 @@ impl Store {
         issue_url: Option<&str>,
     ) -> Result<()> {
         self.conn.lock().unwrap().execute(
-            "INSERT INTO agents (id, worktree_id, name, status, archived, archived_at, kind, claude_session_id, sort_order, created_at, status_changed_at, model, effort, auto_title_pending, unseen, cloud_session_id, pr_url, issue_url, custom_harness, parent_agent_id, role, unattended)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22)",
+            "INSERT INTO agents (id, worktree_id, name, status, archived, archived_at, kind, claude_session_id, sort_order, created_at, status_changed_at, model, effort, auto_title_pending, unseen, cloud_session_id, pr_url, issue_url, custom_harness, parent_agent_id, role, unattended, purpose, orchestrator)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24)",
             params![
                 a.id.as_str(),
                 a.worktree_id.as_str(),
@@ -555,6 +564,8 @@ impl Store {
                 a.parent_agent_id.as_ref().map(AgentId::as_str),
                 a.role,
                 a.unattended as i64,
+                a.purpose.map(Role::as_str),
+                a.orchestrator as i64,
             ],
         )?;
         Ok(())
@@ -1111,7 +1122,8 @@ const WORKTREE_COLUMNS: &str = "id, project_id, path, branch, is_main, sort_orde
 const AGENT_COLUMNS: &str = "id, worktree_id, name, status, archived, kind, \
                              claude_session_id, sort_order, status_changed_at, model, effort, \
                              archived_at, unseen, cloud_session_id, recent_prompts, custom_harness, \
-                             issue_url, parent_agent_id, role, unattended";
+                             issue_url, parent_agent_id, role, unattended, purpose, \
+                             orchestrator";
 const TERMINAL_COLUMNS: &str = "id, worktree_id, name, sort_order, run_command";
 const LINK_COLUMNS: &str = "id, worktree_id, url, sort_order";
 
@@ -1161,6 +1173,11 @@ fn row_to_agent(r: &rusqlite::Row) -> rusqlite::Result<Agent> {
         parent_agent_id: r.get::<_, Option<String>>(17)?.map(AgentId),
         role: r.get(18)?,
         unattended: r.get::<_, i64>(19)? != 0,
+        purpose: r
+            .get::<_, Option<String>>(20)?
+            .as_deref()
+            .and_then(Role::parse),
+        orchestrator: r.get::<_, i64>(21)? != 0,
     })
 }
 
@@ -1262,6 +1279,8 @@ mod tests {
             parent_agent_id: None,
             role: None,
             unattended: false,
+            purpose: None,
+            orchestrator: false,
         };
         let pr_url = "https://github.com/AgentSystemLabs/nebula/pull/42";
         store
@@ -1289,6 +1308,8 @@ mod tests {
             parent_agent_id: None,
             role: None,
             unattended: false,
+            purpose: None,
+            orchestrator: false,
         };
         store.insert_agent(&codex_agent).unwrap();
         let cursor_agent = Agent {
@@ -1313,6 +1334,8 @@ mod tests {
             parent_agent_id: None,
             role: None,
             unattended: false,
+            purpose: None,
+            orchestrator: false,
         };
         store.insert_agent(&cursor_agent).unwrap();
         let issue_url = "https://github.com/AgentSystemLabs/nebula/issues/15";
@@ -1338,6 +1361,8 @@ mod tests {
             parent_agent_id: None,
             role: None,
             unattended: false,
+            purpose: None,
+            orchestrator: false,
         };
         store
             .insert_agent_with_launch_context(&issue_agent, true, None, Some(issue_url))
@@ -1383,6 +1408,8 @@ mod tests {
             parent_agent_id: None,
             role: None,
             unattended: false,
+            purpose: None,
+            orchestrator: false,
         };
         store.insert_agent(&custom).unwrap();
         let (_, _, reloaded, _) = store.load_tree().unwrap();
@@ -1622,6 +1649,11 @@ mod tests {
         assert_eq!(agents[0].parent_agent_id, None);
         assert_eq!(agents[0].role, None, "31: no role");
         assert!(!agents[0].unattended, "31: launches as before");
+        assert_eq!(
+            (agents[0].purpose, agents[0].orchestrator),
+            (None, false),
+            "32: no worker, no orchestrator"
+        );
         let version: i64 = store
             .conn
             .lock()
@@ -1681,20 +1713,23 @@ mod tests {
             parent_agent_id: parent.map(|p| AgentId(p.into())),
             role: None,
             unattended: false,
+            purpose: None,
+            orchestrator: false,
         };
         store.insert_agent(&agent("lead", None)).unwrap();
         store.insert_agent(&agent("w1", Some("lead"))).unwrap();
         let w2 = Agent {
             role: Some("claude".into()),
             unattended: true,
+            purpose: Some(Role::Review),
             ..agent("w2", Some("lead"))
         };
         store.insert_agent(&w2).unwrap();
         let read = store.get_agent(&w2.id).unwrap().unwrap();
         assert_eq!(
-            (read.role.as_deref(), read.unattended),
-            (Some("claude"), true),
-            "a worker's role and unattended flag persist for its respawns"
+            (read.role.as_deref(), read.unattended, read.purpose),
+            (Some("claude"), true, Some(Role::Review)),
+            "a worker's role, unattended flag and purpose persist for its respawns"
         );
         assert_eq!(
             store
@@ -1719,6 +1754,12 @@ mod tests {
         let ids: Vec<_> = agents.iter().map(|a| a.id.as_str()).collect();
         assert_eq!(ids, ["w1", "w2"], "the workers survive their parent");
         assert!(agents.iter().all(|a| a.parent_agent_id.is_none()));
+        let brain = Agent {
+            orchestrator: true,
+            ..agent("brain", None)
+        };
+        store.insert_agent(&brain).unwrap();
+        assert!(store.get_agent(&brain.id).unwrap().unwrap().orchestrator);
     }
 
     /// Real upgrade path: a v12 database (pre-workspaces) walks the whole
@@ -2036,6 +2077,8 @@ mod tests {
             parent_agent_id: None,
             role: None,
             unattended: false,
+            purpose: None,
+            orchestrator: false,
         };
 
         // Default-named session: pending until the agent titles it, and the
@@ -2128,6 +2171,8 @@ mod tests {
                     parent_agent_id: None,
                     role: None,
                     unattended: false,
+                    purpose: None,
+                    orchestrator: false,
                 },
                 true,
             )
@@ -2262,6 +2307,8 @@ mod tests {
                     parent_agent_id: None,
                     role: None,
                     unattended: false,
+                    purpose: None,
+                    orchestrator: false,
                 })
                 .unwrap();
         }
@@ -2332,6 +2379,8 @@ mod tests {
                 parent_agent_id: None,
                 role: None,
                 unattended: false,
+                purpose: None,
+                orchestrator: false,
             };
             store.insert_agent(&agent).unwrap();
             agent.id
@@ -2436,6 +2485,8 @@ mod tests {
                 parent_agent_id: None,
                 role: None,
                 unattended: false,
+                purpose: None,
+                orchestrator: false,
             })
             .unwrap();
         let entry = |n: usize| PromptEntry {

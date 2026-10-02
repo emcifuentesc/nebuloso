@@ -515,6 +515,8 @@ mod tests {
             parent_agent_id: None,
             role: None,
             unattended: false,
+            purpose: None,
+            orchestrator: false,
         };
         store
             .insert_agent_with_auto_title(&agent("pending"), true)

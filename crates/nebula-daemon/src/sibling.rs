@@ -11,7 +11,7 @@
 
 use std::sync::Arc;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use nebula_core::orchestration::{Orchestration, Role, DEFAULT_ROSTER};
 use nebula_core::{
     Agent, AgentId, AgentKind, AgentStatus, ChildSpawn, ChildStatus, EntityId, SessionRef,
@@ -62,14 +62,30 @@ fn truncate_report(text: &str) -> String {
 
 /// What a worker is told at spawn about reporting back: the
 /// `nebula report` rule and, in a worktree nebula cut from `base_ref`, how
-/// to open its PR against that base. Fenced, after the task, so the task
-/// cannot fake its end.
-pub(crate) fn worker_guidance(base_ref: Option<&str>) -> String {
+/// to open its PR against that base — or, for a reviewer, to review the
+/// branch against that base, change nothing and report a verdict. Fenced,
+/// after the task, so the task cannot fake its end.
+pub(crate) fn worker_guidance(base_ref: Option<&str>, purpose: Option<Role>) -> String {
     let mut text = String::from(
         "[nebula] You are a worker started by a nebula orchestrator. When your task is finished, \
          or you are blocked, run `nebula report \"<summary>\"` as the last thing in every turn, \
-         including turns after a follow-up message. Start the summary with `DONE:` or \
-         `BLOCKED:`, list the files changed, and pass `--pr <url>` if you opened a PR.",
+         including turns after a follow-up message.",
+    );
+    if purpose == Some(Role::Review) {
+        let against = match base_ref {
+            Some(base) => format!("`{base}` (`git diff {base}...HEAD`)"),
+            None => "the branch it was cut from".to_string(),
+        };
+        text.push_str(&format!(
+            " You are a reviewer: review the diff of this branch against {against}. Do not edit \
+             files, commit or push. The summary's first line is `VERDICT: APPROVE` or \
+             `VERDICT: CHANGES`, then the numbered blocking issues."
+        ));
+        return format!("<nebula-worker-guidance>\n{text}\n</nebula-worker-guidance>");
+    }
+    text.push_str(
+        " Start the summary with `DONE:` or `BLOCKED:`, list the files changed, and pass \
+         `--pr <url>` if you opened a PR.",
     );
     if let Some(base) = base_ref {
         // A worktree cut from the default branch records `origin/HEAD`, which
@@ -80,9 +96,9 @@ pub(crate) fn worker_guidance(base_ref: Option<&str>) -> String {
             branch => format!(" --base {branch}"),
         };
         text.push_str(&format!(
-            " Implementers: commit, `git push -u origin HEAD`, then `gh pr create \
-             --fill{base_flag}`. If push or `gh` fails, report `BLOCKED:` with the error's first \
-             line."
+            " Implementers: commit and `git push -u origin HEAD` every turn; the first time, \
+             also `gh pr create --fill{base_flag}`, and on later turns push to that same PR. If \
+             push or `gh` fails, report `BLOCKED:` with the error's first line."
         ));
     }
     format!("<nebula-worker-guidance>\n{text}\n</nebula-worker-guidance>")
@@ -167,9 +183,8 @@ impl Daemon {
                     let keys = orchestration.roster.keys().collect::<Vec<_>>();
                     bail!("no role {key} in the roster ({})", keys.join(", "));
                 };
-                entry
-                    .check_role(key, Role::Implement)
-                    .map_err(anyhow::Error::msg)?;
+                let purpose = child.map_or(Role::Implement, ChildSpawn::purpose);
+                entry.check_role(key, purpose).map_err(anyhow::Error::msg)?;
                 if kind.is_some_and(|k| k != entry.kind || entry.custom_harness.is_some()) {
                     bail!("--kind contradicts role {key}");
                 }
@@ -233,6 +248,8 @@ impl Daemon {
             parent_agent_id,
             role: role.map(|(key, _)| key.to_string()),
             unattended: role.is_some_and(|(_, entry)| entry.unattended),
+            purpose: child.map(ChildSpawn::purpose),
+            orchestrator: false,
         })
     }
 
@@ -240,6 +257,20 @@ impl Daemon {
     /// resolved against the current config and harness registry. The
     /// default roster asks PATH the way a create does.
     pub(crate) async fn orchestration_for(&self, worktree: &WorktreeId) -> Result<Orchestration> {
+        let config = crate::config::Config::load();
+        let registry = nebula_core::harness::registry(&config.harnesses, &config.custom_harnesses);
+        for kind in DEFAULT_ROSTER {
+            if let Some(harness) = registry.iter().find(|h| h.id == kind.as_str()) {
+                self.cli_available(harness.program.trim()).await;
+            }
+        }
+        self.known_orchestration(worktree)
+    }
+
+    /// [`Self::orchestration_for`] without asking PATH: the default roster
+    /// holds the harnesses the probe cache already knows are installed,
+    /// which is what a spawn, unable to wait on a probe, can tell.
+    pub(crate) fn known_orchestration(&self, worktree: &WorktreeId) -> Result<Orchestration> {
         let worktree = self
             .store
             .get_worktree(worktree)?
@@ -250,19 +281,10 @@ impl Daemon {
             .context("project not found")?;
         let config = crate::config::Config::load();
         let registry = nebula_core::harness::registry(&config.harnesses, &config.custom_harnesses);
-        let mut installed = Vec::new();
-        for kind in DEFAULT_ROSTER {
-            if let Some(harness) = registry.iter().find(|h| h.id == kind.as_str()) {
-                let program = harness.program.trim();
-                if self.cli_available(program).await {
-                    installed.push(program.to_string());
-                }
-            }
-        }
         Orchestration::resolve(
             config.orchestration(&project.repo_path).as_ref(),
             &registry,
-            &|program| installed.iter().any(|p| p == program),
+            &|program| self.cli_known_available(program),
         )
         .map_err(anyhow::Error::msg)
     }
@@ -303,6 +325,49 @@ impl Daemon {
         }
     }
 
+    /// The existing WORKTREE a reviewer attaches to: the one in the caller's
+    /// project checked out on exactly `branch` (git allows one per branch),
+    /// when at least one of the caller's workers lives there and every one
+    /// of them is settled. Callers hold `worktree_ops` through the
+    /// reviewer's insert, so a second reviewer finds the first, still on its
+    /// starting prompt, working — and a user's own worktree, with no worker
+    /// of the caller in it, is never handed to one.
+    pub(crate) fn reviewed_worktree(
+        &self,
+        caller: &AgentId,
+        beside: &WorktreeId,
+        branch: &str,
+    ) -> Result<WorktreeId> {
+        let project = self
+            .store
+            .get_worktree(beside)?
+            .context("worktree not found")?
+            .project_id;
+        let not_ours =
+            || anyhow!("branch {branch} exists and is not one of your workers' worktrees");
+        let (_, worktrees, _, _) = self.store.load_tree()?;
+        let worktree = worktrees
+            .into_iter()
+            .find(|w| w.project_id == project && w.branch == branch)
+            .ok_or_else(not_ours)?;
+        let workers = self
+            .store
+            .child_agents(caller)?
+            .into_iter()
+            .filter(|a| a.worktree_id == worktree.id)
+            .collect::<Vec<_>>();
+        if workers.is_empty() {
+            return Err(not_ours());
+        }
+        if let Some(busy) = workers
+            .iter()
+            .find(|a| !a.status.is_settled() || self.awaiting_turn(&a.id))
+        {
+            bail!("{} is working in this worktree; wait first", busy.id);
+        }
+        Ok(worktree.id)
+    }
+
     /// `nebula spawn`, run by the agent inside its own session: create and
     /// boot a new agent beside it with `starting_prompt` as its first
     /// prompt — or, with `child`, a worker of it. Returns the new row's id
@@ -323,12 +388,23 @@ impl Daemon {
             None => Orchestration::default(),
         };
         let mut spec = self.sibling_spec(id, kind, starting_prompt, child, &orchestration)?;
-        if let Some(wanted) = child.and_then(|c| c.worktree.as_ref()) {
-            // Checked before the checkout exists, so a bad prompt does not
-            // leave a worktree behind.
-            validate_starting_prompt(starting_prompt)?;
-            spec.worktree = self.worker_worktree(&spec.worktree, wanted).await?;
-        }
+        let review = child.is_some_and(|c| c.review);
+        let _ops = match child.and_then(|c| c.worktree.as_ref()) {
+            Some(wanted) if review => {
+                let ops = self.worktree_ops.lock().await;
+                spec.worktree = self.reviewed_worktree(id, &spec.worktree, &wanted.branch)?;
+                Some(ops)
+            }
+            Some(wanted) => {
+                // Checked before the checkout exists, so a bad prompt does
+                // not leave a worktree behind.
+                validate_starting_prompt(starting_prompt)?;
+                spec.worktree = self.worker_worktree(&spec.worktree, wanted).await?;
+                None
+            }
+            None if review => bail!("--review needs --worktree"),
+            None => None,
+        };
         let worktree = self
             .store
             .get_worktree(&spec.worktree)?
@@ -364,6 +440,7 @@ impl Daemon {
                     name: agent.name,
                     kind: agent.kind,
                     role: agent.role,
+                    purpose: agent.purpose,
                     status: agent.status,
                     status_changed_at: agent.status_changed_at,
                     worktree: worktree.path,
@@ -474,13 +551,41 @@ mod tests {
 
     #[test]
     fn worker_guidance_names_the_pr_base_only_when_it_is_a_branch() {
-        assert!(worker_guidance(Some("origin/main")).contains("gh pr create --fill --base main`"));
-        let default_branch = worker_guidance(Some("origin/HEAD"));
+        assert!(
+            worker_guidance(Some("origin/main"), None).contains("gh pr create --fill --base main`")
+        );
+        let default_branch = worker_guidance(Some("origin/HEAD"), None);
         assert!(
             default_branch.contains("gh pr create --fill`"),
             "origin/HEAD is no branch gh can target"
         );
-        assert!(!worker_guidance(None).contains("gh pr create"));
+        assert!(!worker_guidance(None, None).contains("gh pr create"));
+        assert!(
+            default_branch.contains("on later turns push to that same PR"),
+            "a review round's follow-up must not try to open a second PR"
+        );
+    }
+
+    #[test]
+    fn a_reviewer_is_told_to_review_against_the_base_change_nothing_and_give_a_verdict() {
+        let text = worker_guidance(Some("origin/main"), Some(Role::Review));
+        assert!(text.contains(
+            "review the diff of this branch against `origin/main` (`git diff origin/main...HEAD`)"
+        ));
+        assert!(text.contains("Do not edit files, commit or push."));
+        assert!(text.contains(
+            "first line is `VERDICT: APPROVE` or `VERDICT: CHANGES`, then the numbered blocking \
+             issues"
+        ));
+        assert!(
+            !text.contains("gh pr create") && !text.contains("DONE:"),
+            "{text}"
+        );
+        assert_eq!(
+            worker_guidance(Some("origin/main"), Some(Role::Implement)),
+            worker_guidance(Some("origin/main"), None),
+            "an implementer is told what every worker was before reviewers"
+        );
     }
     use crate::hooks::HookEnv;
     use crate::store::Store;
@@ -544,6 +649,8 @@ mod tests {
             parent_agent_id: None,
             role: None,
             unattended: false,
+            purpose: None,
+            orchestrator: false,
         }
     }
 
@@ -601,6 +708,7 @@ mod tests {
             model: model.map(str::to_string),
             effort: None,
             role: None,
+            review: false,
         }
     }
 
@@ -1197,6 +1305,7 @@ mod tests {
             "careful": {"kind": "claude", "model": "opus", "effort": "max", "unattended": true},
             "plain": {"kind": "claude"},
             "reviewer": {"kind": "pi", "roles": ["review"]},
+            "builder": {"kind": "codex", "roles": ["implement"]},
         }});
         Orchestration::resolve(
             Some(&raw),
@@ -1278,7 +1387,153 @@ mod tests {
         );
         assert_eq!(
             err(None, role("nope")),
-            "no role nope in the roster (fast, careful, plain, reviewer)"
+            "no role nope in the roster (fast, careful, plain, reviewer, builder)"
+        );
+    }
+
+    fn review(key: Option<&str>) -> ChildSpawn {
+        ChildSpawn {
+            role: key.map(str::to_string),
+            review: true,
+            ..child(None)
+        }
+    }
+
+    #[test]
+    fn a_reviewer_needs_a_role_that_reviews_and_records_its_purpose() {
+        let daemon = daemon();
+        daemon
+            .store
+            .insert_agent(&agent("lead", "feat", AgentKind::Claude, None))
+            .unwrap();
+        let orchestration = roster();
+        let spawn = |child: Option<ChildSpawn>| {
+            daemon.sibling_spec(
+                &AgentId("lead".into()),
+                None,
+                "x",
+                child.as_ref(),
+                &orchestration,
+            )
+        };
+        let purpose = |child| spawn(child).unwrap().purpose;
+        assert_eq!(purpose(Some(review(Some("reviewer")))), Some(Role::Review));
+        assert_eq!(purpose(Some(review(None))), Some(Role::Review));
+        assert_eq!(purpose(Some(role("builder"))), Some(Role::Implement));
+        assert_eq!(purpose(Some(child(None))), Some(Role::Implement));
+        assert_eq!(purpose(None), None, "a sibling is no worker");
+        assert_eq!(
+            spawn(Some(review(Some("builder"))))
+                .err()
+                .unwrap()
+                .to_string(),
+            "role builder cannot review"
+        );
+    }
+
+    fn reviewed(daemon: &Daemon, branch: &str) -> Result<WorktreeId> {
+        daemon.reviewed_worktree(&AgentId("lead".into()), &WorktreeId("root".into()), branch)
+    }
+
+    #[tokio::test]
+    async fn a_reviewer_attaches_only_where_every_worker_of_the_caller_is_settled() {
+        let daemon = daemon();
+        lead(&daemon);
+        worker_of(&daemon, "w-1", "lead", "feat");
+        assert_eq!(
+            reviewed(&daemon, "feat").unwrap_err().to_string(),
+            "w-1 is working in this worktree; wait first"
+        );
+        set_status(&daemon, "w-1", AgentStatus::Finished);
+        assert_eq!(
+            reviewed(&daemon, "feat").unwrap(),
+            WorktreeId("feat".into())
+        );
+        set_status(&daemon, "w-1", AgentStatus::NeedsFeedback);
+        assert_eq!(
+            reviewed(&daemon, "feat").unwrap(),
+            WorktreeId("feat".into())
+        );
+
+        go_live(&daemon, "w-1");
+        send(&daemon, "w-1", "fix the first issue").unwrap();
+        assert!(awaiting(&daemon, "w-1"));
+        assert_eq!(
+            reviewed(&daemon, "feat").unwrap_err().to_string(),
+            "w-1 is working in this worktree; wait first",
+            "a sent turn not yet begun is working"
+        );
+    }
+
+    #[test]
+    fn a_reviewer_never_attaches_to_a_worktree_without_a_worker_of_the_caller() {
+        let daemon = daemon();
+        lead(&daemon);
+        daemon
+            .store
+            .insert_agent(&agent("other", "root", AgentKind::Claude, None))
+            .unwrap();
+        worker_of(&daemon, "w-other", "other", "feat");
+        set_status(&daemon, "w-other", AgentStatus::Finished);
+        let refused = "branch feat exists and is not one of your workers' worktrees";
+        assert_eq!(reviewed(&daemon, "feat").unwrap_err().to_string(), refused);
+        assert_eq!(
+            reviewed(&daemon, "Feat").unwrap_err().to_string(),
+            "branch Feat exists and is not one of your workers' worktrees",
+            "the branch matches exactly"
+        );
+        worker_of(&daemon, "w-gone", "lead", "feat");
+        daemon
+            .store
+            .set_agent_archived(&AgentId("w-gone".into()), true)
+            .unwrap();
+        assert_eq!(
+            reviewed(&daemon, "feat").unwrap_err().to_string(),
+            refused,
+            "an archived worker does not count"
+        );
+    }
+
+    #[tokio::test]
+    async fn review_needs_a_worktree_and_only_review_reuses_one() {
+        let tmp = tempfile::tempdir().unwrap();
+        let daemon = daemon_on_repo(&std::fs::canonicalize(tmp.path()).unwrap());
+        let err = daemon
+            .spawn_sibling_agent(&AgentId("lead".into()), None, "x", Some(&review(None)))
+            .await
+            .unwrap_err();
+        assert_eq!(err.to_string(), "--review needs --worktree");
+
+        let wanted = SpawnWorktree {
+            branch: "feat-a".into(),
+            base: Some("main".into()),
+        };
+        let feat = daemon
+            .worker_worktree(&WorktreeId("rt".into()), &wanted)
+            .await
+            .unwrap();
+        let mut implementer = agent("impl", feat.as_str(), AgentKind::Claude, None);
+        implementer.parent_agent_id = Some(AgentId("lead".into()));
+        implementer.status = AgentStatus::Finished;
+        daemon.store.insert_agent(&implementer).unwrap();
+        let implement = ChildSpawn {
+            worktree: Some(wanted),
+            ..child(None)
+        };
+        let err = daemon
+            .spawn_sibling_agent(&AgentId("lead".into()), None, "x", Some(&implement))
+            .await
+            .unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "branch feat-a already exists",
+            "without --review even a worker's worktree is refused"
+        );
+        assert_eq!(
+            daemon
+                .reviewed_worktree(&AgentId("lead".into()), &WorktreeId("rt".into()), "feat-a")
+                .unwrap(),
+            feat
         );
     }
 
@@ -1435,6 +1690,7 @@ mod tests {
             model: None,
             effort: None,
             role: None,
+            review: false,
         };
         let err = daemon
             .spawn_sibling_agent(&AgentId("lead".into()), None, "  ", Some(&child))

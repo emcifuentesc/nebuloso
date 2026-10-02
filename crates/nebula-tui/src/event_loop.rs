@@ -5235,6 +5235,10 @@ fn worktree_menu_items(app: &App, w: &nebula_core::Worktree) -> Vec<MenuItem> {
     };
     let mut items = vec![
         MenuItem::new("New agent", MenuAction::NewAgent(w.id.clone())),
+        MenuItem::new(
+            "New orchestrator…",
+            MenuAction::NewOrchestrator(w.id.clone()),
+        ),
         MenuItem::new("New terminal", MenuAction::NewTerminal(w.id.clone())),
         MenuItem::new(run, MenuAction::ToggleRun(w.id.clone())),
         MenuItem::new("Open", MenuAction::OpenWorktree(w.id.clone())),
@@ -5345,6 +5349,10 @@ fn panel_menu_items(app: &App, focus: Focus) -> Vec<MenuItem> {
             .map(|w| {
                 vec![
                     MenuItem::new("New agent", MenuAction::NewAgent(w.id.clone())),
+                    MenuItem::new(
+                        "New orchestrator…",
+                        MenuAction::NewOrchestrator(w.id.clone()),
+                    ),
                     MenuItem::new("Show/hide archived", MenuAction::ToggleArchived),
                 ]
             })
@@ -7073,6 +7081,31 @@ fn run_menu_action(app: &mut App, action: MenuAction, out: &mut Vec<ClientReques
             }
         }
         MenuAction::NewAgent(worktree) => open_new_agent_picker(app, worktree),
+        MenuAction::NewOrchestrator(worktree) => {
+            if app.is_placeholder_worktree(&worktree) {
+                app.flash = Some(WORKTREE_STILL_CREATING.into());
+            } else {
+                agent_picker::open_orchestrator_picker(app, worktree);
+            }
+        }
+        MenuAction::NewOrchestratorOfKind {
+            worktree,
+            kind,
+            custom,
+        } => {
+            let harness = crate::config::Config::load().effective_harness(kind, custom.as_deref());
+            let model = harness.default_model().map(str::to_string);
+            let effort = harness.default_effort().map(str::to_string);
+            create_agent(
+                app,
+                AgentLaunchDraft {
+                    custom,
+                    orchestrator: true,
+                    ..AgentLaunchDraft::new(worktree, kind, model, effort)
+                },
+                out,
+            );
+        }
         MenuAction::NewTerminal(worktree) => create_terminal(app, worktree, out),
         MenuAction::RenameTerminal(id) => open_prompt(app, PromptKind::RenameTerminal { id }),
         MenuAction::CloseTerminal(id) => {
@@ -8285,6 +8318,7 @@ fn create_agent(app: &mut App, draft: AgentLaunchDraft, out: &mut Vec<ClientRequ
         focus_pane,
         placeholder,
         follow,
+        orchestrator,
     } = draft;
     // A PR SESSION is addressed to the PROJECT, not to a checkout: the
     // DAEMON runs it in the PR head branch's own worktree, creating that
@@ -8420,6 +8454,7 @@ fn create_agent(app: &mut App, draft: AgentLaunchDraft, out: &mut Vec<ClientRequ
             cloud_prompt,
             starting_prompt,
             issue_url,
+            orchestrator,
         },
     });
     // The create consumes (or, off-spec, discards) the worktree's warm
@@ -10929,6 +10964,8 @@ mod tests {
                     parent_agent_id: None,
                     role: None,
                     unattended: false,
+                    purpose: None,
+                    orchestrator: false,
                 }),
             },
         );
@@ -10961,6 +10998,8 @@ mod tests {
                     parent_agent_id: None,
                     role: None,
                     unattended: false,
+                    purpose: None,
+                    orchestrator: false,
                 }),
             },
         );
@@ -11721,6 +11760,8 @@ mod tests {
                     parent_agent_id: None,
                     role: None,
                     unattended: false,
+                    purpose: None,
+                    orchestrator: false,
                 }),
             },
         );
@@ -15714,6 +15755,8 @@ diff --git a/src/c.rs b/src/c.rs
                     parent_agent_id: None,
                     role: None,
                     unattended: false,
+                    purpose: None,
+                    orchestrator: false,
                 }),
             }
         };
@@ -15772,6 +15815,8 @@ diff --git a/src/c.rs b/src/c.rs
                 parent_agent_id: None,
                 role: None,
                 unattended: false,
+                purpose: None,
+                orchestrator: false,
             }),
         };
         // A long-running turn outranks a more recent finish, because a
@@ -15857,6 +15902,8 @@ diff --git a/src/c.rs b/src/c.rs
                 parent_agent_id: None,
                 role: None,
                 unattended: false,
+                purpose: None,
+                orchestrator: false,
             }),
         };
         hse(
@@ -15920,6 +15967,8 @@ diff --git a/src/c.rs b/src/c.rs
                     parent_agent_id: None,
                     role: None,
                     unattended: false,
+                    purpose: None,
+                    orchestrator: false,
                 }),
             },
         );
@@ -15992,6 +16041,8 @@ diff --git a/src/c.rs b/src/c.rs
                     parent_agent_id: None,
                     role: None,
                     unattended: false,
+                    purpose: None,
+                    orchestrator: false,
                 }),
             },
         );
@@ -17395,6 +17446,56 @@ diff --git a/src/c.rs b/src/c.rs
     }
 
     #[test]
+    fn new_orchestrator_offers_harnesses_with_a_system_prompt_flag_and_launches_one() {
+        with_config_json("{}", || {
+            let mut app = App::new();
+            seed_tree(&mut app);
+            app.focus = Focus::Sessions;
+            let worktree = app.selected_worktree().unwrap().id.clone();
+            let mut out = Vec::new();
+            run_menu_action(&mut app, MenuAction::NewOrchestrator(worktree), &mut out);
+            let Some(Overlay::Menu(menu)) = &app.overlay else {
+                panic!("expected the orchestrator picker, got {:?}", app.overlay);
+            };
+            let labels: Vec<&str> = menu.items.iter().map(|item| item.label.as_str()).collect();
+            assert_eq!(labels, ["Claude", "Pi", "Grok Build"]);
+
+            press(&mut app, KeyCode::Char('j'), KeyModifiers::NONE, &mut out);
+            press(&mut app, KeyCode::Enter, KeyModifiers::NONE, &mut out);
+            assert!(app.overlay.is_none(), "{:?}", app.overlay);
+            assert!(
+                matches!(
+                    out.as_slice(),
+                    [ClientRequest::CreateAgent {
+                        kind: AgentKind::Pi,
+                        orchestrator: true,
+                        starting_prompt: None,
+                        ..
+                    }]
+                ),
+                "{out:?}"
+            );
+        });
+        let none_can = r#"{"claude_enabled": false, "pi_enabled": false,
+            "harnesses": {"grok": {"enabled": false}}}"#;
+        with_config_json(none_can, || {
+            let mut app = App::new();
+            seed_tree(&mut app);
+            let worktree = app.selected_worktree().unwrap().id.clone();
+            run_menu_action(
+                &mut app,
+                MenuAction::NewOrchestrator(worktree),
+                &mut Vec::new(),
+            );
+            assert!(app.overlay.is_none());
+            assert_eq!(
+                app.flash.as_deref(),
+                Some(crate::agent_picker::NO_ORCHESTRATOR_FLASH)
+            );
+        });
+    }
+
+    #[test]
     fn picker_with_every_harness_disabled_flashes_instead_of_opening() {
         with_config_json(
             r#"{"claude_enabled": false, "codex_enabled": false, "cursor_enabled": false, "pi_enabled": false, "muse_enabled": false, "opencode_enabled": false, "harnesses":{"grok":{"enabled":false}}}"#,
@@ -18199,6 +18300,8 @@ diff --git a/src/c.rs b/src/c.rs
                     parent_agent_id: None,
                     role: None,
                     unattended: false,
+                    purpose: None,
+                    orchestrator: false,
                 }),
             },
         );
@@ -18727,6 +18830,8 @@ diff --git a/src/c.rs b/src/c.rs
             parent_agent_id: None,
             role: None,
             unattended: false,
+            purpose: None,
+            orchestrator: false,
         })
     }
 
@@ -20218,6 +20323,8 @@ diff --git a/src/c.rs b/src/c.rs
             parent_agent_id: None,
             role: None,
             unattended: false,
+            purpose: None,
+            orchestrator: false,
         };
 
         // a1 is the selected session; its upsert lands under w2.
@@ -20412,6 +20519,8 @@ diff --git a/src/c.rs b/src/c.rs
             parent_agent_id: None,
             role: None,
             unattended: false,
+            purpose: None,
+            orchestrator: false,
         })
     }
 
@@ -22150,6 +22259,8 @@ diff --git a/src/c.rs b/src/c.rs
                     parent_agent_id: None,
                     role: None,
                     unattended: false,
+                    purpose: None,
+                    orchestrator: false,
                 }),
             },
         );
@@ -22178,6 +22289,8 @@ diff --git a/src/c.rs b/src/c.rs
                     parent_agent_id: None,
                     role: None,
                     unattended: false,
+                    purpose: None,
+                    orchestrator: false,
                 }),
             },
         );
@@ -22494,6 +22607,8 @@ diff --git a/src/c.rs b/src/c.rs
             parent_agent_id: None,
             role: None,
             unattended: false,
+            purpose: None,
+            orchestrator: false,
         };
         for a in [
             agent("ask", "w2", AgentStatus::NeedsFeedback, false),
@@ -22956,6 +23071,8 @@ diff --git a/src/c.rs b/src/c.rs
                     parent_agent_id: None,
                     role: None,
                     unattended: false,
+                    purpose: None,
+                    orchestrator: false,
                 }),
             },
         );
@@ -25174,6 +25291,8 @@ diff --git a/src/c.rs b/src/c.rs
                         parent_agent_id: None,
                         role: None,
                         unattended: false,
+                        purpose: None,
+                        orchestrator: false,
                     }),
                 },
             );
@@ -25251,6 +25370,8 @@ diff --git a/src/c.rs b/src/c.rs
             parent_agent_id: None,
             role: None,
             unattended: false,
+            purpose: None,
+            orchestrator: false,
         })
     }
 
@@ -25877,6 +25998,8 @@ diff --git a/src/c.rs b/src/c.rs
                     parent_agent_id: None,
                     role: None,
                     unattended: false,
+                    purpose: None,
+                    orchestrator: false,
                 }),
             },
         );
@@ -25947,6 +26070,8 @@ diff --git a/src/c.rs b/src/c.rs
                     parent_agent_id: None,
                     role: None,
                     unattended: false,
+                    purpose: None,
+                    orchestrator: false,
                 }),
             },
         );
@@ -25973,6 +26098,7 @@ diff --git a/src/c.rs b/src/c.rs
                         prefix: "Be strict.".into(),
                         postfix: "Run the tests.".into(),
                         skip_task: false,
+                        orchestrator: false,
                     },
                     AgentPreset {
                         name: "scratch".into(),
@@ -25983,6 +26109,7 @@ diff --git a/src/c.rs b/src/c.rs
                         prefix: String::new(),
                         postfix: String::new(),
                         skip_task: false,
+                        orchestrator: false,
                     },
                 ])
                 .unwrap();
@@ -26030,6 +26157,7 @@ diff --git a/src/c.rs b/src/c.rs
                 prefix: "Investigate whether this pull request should be merged.".into(),
                 postfix: String::new(),
                 skip_task: true,
+                orchestrator: false,
             });
             crate::agent_presets::save(&presets).unwrap();
             let skip_row = presets.len() - 1;
@@ -26464,6 +26592,7 @@ diff --git a/src/c.rs b/src/c.rs
                 prefix: "Commit and push.".into(),
                 postfix: String::new(),
                 skip_task: true,
+                orchestrator: false,
             });
             crate::agent_presets::save(&presets).unwrap();
             press(&mut app, KeyCode::Char('e'), KeyModifiers::NONE, &mut out);
@@ -26756,6 +26885,8 @@ diff --git a/src/c.rs b/src/c.rs
                         parent_agent_id: None,
                         role: None,
                         unattended: false,
+                        purpose: None,
+                        orchestrator: false,
                     }),
                 },
             );
@@ -28189,6 +28320,8 @@ diff --git a/src/c.rs b/src/c.rs
                         parent_agent_id: None,
                         role: None,
                         unattended: false,
+                        purpose: None,
+                        orchestrator: false,
                     }),
                 },
             );
@@ -29509,6 +29642,7 @@ diff --git a/src/c.rs b/src/c.rs
                 prefix: "Review this pull request.".into(),
                 postfix: String::new(),
                 skip_task: true,
+                orchestrator: false,
             });
             crate::agent_presets::save(&presets).unwrap();
             let skip_row = (presets.len() - 1) as u16;
@@ -30114,6 +30248,8 @@ diff --git a/src/c.rs b/src/c.rs
                     parent_agent_id: None,
                     role: None,
                     unattended: false,
+                    purpose: None,
+                    orchestrator: false,
                 }),
             },
         );

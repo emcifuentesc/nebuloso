@@ -6,6 +6,7 @@ pub mod hooks;
 pub mod lifecycle;
 pub mod metrics;
 pub mod open_files;
+pub mod orchestration;
 pub mod pr_scope;
 pub mod prompt_history;
 pub mod pty;

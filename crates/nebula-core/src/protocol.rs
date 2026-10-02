@@ -2,13 +2,13 @@ use crate::entities::{
     Agent, AgentKind, AgentStatus, Entity, EntityId, Link, Project, TerminalTab, Worktree,
 };
 use crate::ids::{AgentId, LinkId, ProjectId, TerminalId, WorktreeId};
-use crate::orchestration::Orchestration;
+use crate::orchestration::{Orchestration, Role};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 /// Bump on any breaking change to these enums. The daemon refuses mismatched
 /// clients; the client then offers a kill-and-restart of the old daemon.
-pub const PROTOCOL_VERSION: u32 = 49;
+pub const PROTOCOL_VERSION: u32 = 50;
 
 /// Max IPC frame size (length prefix sanity bound).
 pub const MAX_FRAME_LEN: u32 = 4 * 1024 * 1024;
@@ -128,6 +128,11 @@ pub enum ClientRequest {
         /// since a spare booted bare never got it.
         #[serde(default)]
         issue_url: Option<String>,
+        /// Launch an ORCHESTRATOR: its system prompt carries nebula's
+        /// orchestrator guidance and the project's roster. Refused for a
+        /// harness without a system-prompt flag.
+        #[serde(default)]
+        orchestrator: bool,
     },
     /// Create a local AGENT of any kind from an OPEN PRS row — a PR
     /// SESSION. It never runs in the ROOT WORKTREE: the daemon finds the
@@ -463,6 +468,22 @@ pub struct ChildSpawn {
     /// harness, model, effort and unattended flag come from that entry.
     #[serde(default)]
     pub role: Option<String>,
+    /// Start a reviewer (`nebula spawn --review`) in the existing worktree
+    /// `worktree` names instead of a new one, told to review its branch and
+    /// change nothing.
+    #[serde(default)]
+    pub review: bool,
+}
+
+impl ChildSpawn {
+    /// What the worker is started to do, which its role must allow.
+    pub fn purpose(&self) -> Role {
+        if self.review {
+            Role::Review
+        } else {
+            Role::Implement
+        }
+    }
 }
 
 /// One worker as its parent sees it: what `nebula children`, `status` and
@@ -474,6 +495,8 @@ pub struct ChildStatus {
     pub kind: AgentKind,
     /// The ROSTER key it was started as, if any.
     pub role: Option<String>,
+    /// Review (`nebula spawn --review`) or implement.
+    pub purpose: Option<Role>,
     pub status: AgentStatus,
     pub status_changed_at: i64,
     /// A `nebula send` reached it and its status machine has not yet
@@ -734,6 +757,7 @@ mod tests {
                     name: "w".into(),
                     kind: AgentKind::Claude,
                     role: None,
+                    purpose: None,
                     status,
                     status_changed_at: 0,
                     awaiting_turn,

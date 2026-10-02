@@ -273,6 +273,15 @@ pub struct Agent {
     /// launches it the same way; a session that is not a worker never has it.
     #[serde(default)]
     pub unattended: bool,
+    /// What a worker was started to do: review (`nebula spawn --review`)
+    /// or implement (every other worker). None for a session that is not a
+    /// worker.
+    #[serde(default)]
+    pub purpose: Option<crate::orchestration::Role>,
+    /// An ORCHESTRATOR: launched with nebula's orchestrator guidance and its
+    /// project's roster on the system prompt. Never a worker.
+    #[serde(default)]
+    pub orchestrator: bool,
 }
 
 impl Agent {

@@ -184,13 +184,20 @@ pub(crate) enum Command {
         /// Start the worker from this `nebula roster` entry (implies
         /// --child): its harness, model, effort and unattended flag. --model
         /// and --effort still win; a --kind other than the entry's is
-        /// refused, and so is an entry whose roles leave out implement.
+        /// refused, and so is an entry whose roles leave out implement (or,
+        /// with --review, review).
         #[arg(long, value_name = "KEY")]
         role: Option<String>,
         /// Start the worker in a new worktree on this branch (implies
-        /// --child). The branch must not exist yet.
+        /// --child). The branch must not exist yet, unless --review.
         #[arg(long, value_name = "BRANCH")]
         worktree: Option<String>,
+        /// Start the worker as a reviewer in the existing worktree on the
+        /// --worktree branch: one where a worker of this session lives and
+        /// every such worker is settled. It is told to review the branch
+        /// against its base, change nothing, and report a VERDICT line.
+        #[arg(long, requires = "worktree", conflicts_with = "base")]
+        review: bool,
         /// Start point for the --worktree branch, resolved like `nebula
         /// worktree --base` (default: the `worktree_base_branch` setting,
         /// else origin's default branch, fetched).
@@ -208,9 +215,10 @@ pub(crate) enum Command {
     ///
     /// Run from inside a nebula agent session that started workers with
     /// `nebula spawn --child`. Prints one JSON array, oldest worker first, of
-    /// {"id","name","kind","role","status","status_changed_at",
+    /// {"id","name","kind","role","purpose","status","status_changed_at",
     /// "awaiting_turn","worktree","branch"}; role is the `--role` it was
-    /// started with, or null;
+    /// started with, or null; purpose is "review" for a `--review` worker,
+    /// else "implement";
     /// an archived worker is left out, and no workers prints [].
     #[command(after_help = CHILDREN_EXAMPLES)]
     Children,
@@ -283,7 +291,7 @@ pub(crate) enum Command {
     ///
     /// Run from inside a nebula agent session. Prints one JSON object,
     /// {"roster":{"<key>":{"kind","model","effort","roles","unattended"},…},
-    /// "max_children":N}, resolved for this session's project from the
+    /// "max_children":N,"cross_review":{"max_rounds":N}}, resolved for this session's project from the
     /// `orchestration` setting, entries in the order the settings list them.
     /// Without a configured roster it lists every installed hooked harness.
     /// A setting that cannot be used is refused with the entry it names.
@@ -485,7 +493,8 @@ Examples:
   nebula spawn --kind codex \"review the diff on this branch\"
   nebula spawn --worktree fix-login --base main \"fix the login redirect\"
   nebula spawn --child --model sonnet \"summarize the open issues\"
-  nebula spawn --role codex --worktree fix-parser \"fix the parser\"";
+  nebula spawn --role codex --worktree fix-parser \"fix the parser\"
+  nebula spawn --role claude --worktree fix-parser --review \"review fix-parser\"";
 
 const ROSTER_EXAMPLES: &str = "\
 Examples:
