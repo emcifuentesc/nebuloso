@@ -2512,11 +2512,16 @@ impl Daemon {
             branch: &worktree.branch,
         });
         let rule = crate::pr_scope::combined_rule(scope.as_ref(), issue_scope.as_ref());
-        let prompts = crate::pr_scope::launch_prompts(
-            harness.system.append_flag.is_some(),
+        let worker_guidance = agent
+            .parent_agent_id
+            .is_some()
+            .then(|| crate::sibling::worker_guidance(worktree.base_ref.as_deref()));
+        let prompts = spawn_prompts(
+            &harness,
             agent.session_id.is_some(),
             rule.as_deref(),
             initial_prompt,
+            worker_guidance.as_deref(),
         );
         let (program, args, resumed) = match (cloud_task, attach) {
             (Some(task), _) => claude_cloud_spawn_command(
@@ -3101,6 +3106,26 @@ fn relocation_prompt(relocate: bool, worktree: &Worktree) -> Option<String> {
             worktree.path.display()
         )
     })
+}
+
+/// A spawn's system and first prompts: the launch rule
+/// ([`crate::pr_scope::launch_prompts`]), then a worker's guidance
+/// ([`crate::sibling::worker_prompts`]), each placed by whether `harness`
+/// maps a system-prompt flag.
+fn spawn_prompts(
+    harness: &nebula_core::harness::HarnessDescriptor,
+    resumed: bool,
+    rule: Option<&str>,
+    initial: Option<&str>,
+    worker_guidance: Option<&str>,
+) -> crate::pr_scope::LaunchPrompts {
+    let system_append = harness.system.append_flag.is_some();
+    crate::sibling::worker_prompts(
+        crate::pr_scope::launch_prompts(system_append, resumed, rule, initial),
+        system_append,
+        resumed,
+        worker_guidance,
+    )
 }
 
 /// The checkout the test wrapper boots every spawn in.
@@ -3912,6 +3937,98 @@ mod tests {
             true,
         );
         assert_eq!(args, vec!["-m", "flash"]);
+    }
+
+    fn worker_argv(kind: AgentKind, resumed: bool, guidance: Option<&str>) -> Vec<String> {
+        let harness = test_harness(&test_registry(), kind);
+        let prompts = spawn_prompts(&harness, resumed, None, Some("fix the parser"), guidance);
+        agent_spawn_command_with(
+            &harness,
+            resumed.then_some("sid-1"),
+            Some(Path::new(TEST_CWD)),
+            None,
+            None,
+            None,
+            prompts.initial.as_deref(),
+            prompts.system.as_deref(),
+            true,
+        )
+        .1
+    }
+
+    /// A worker's guidance rides the system-prompt flag where the harness
+    /// maps one, and trails the task otherwise; an ordinary session's argv
+    /// is what it was before workers existed.
+    #[test]
+    fn worker_guidance_rides_the_system_flag_or_trails_the_first_prompt() {
+        let guidance = crate::sibling::worker_guidance(Some("origin/main"));
+        for kind in AgentKind::ALL {
+            if matches!(kind, AgentKind::Custom) {
+                continue;
+            }
+            let harness = test_harness(&test_registry(), kind);
+            for resumed in [false, true] {
+                let plain = agent_spawn_command_with(
+                    &harness,
+                    resumed.then_some("sid-1"),
+                    Some(Path::new(TEST_CWD)),
+                    None,
+                    None,
+                    None,
+                    Some("fix the parser"),
+                    None,
+                    true,
+                )
+                .1;
+                assert_eq!(worker_argv(kind, resumed, None), plain, "{kind:?} ordinary");
+                let worker = worker_argv(kind, resumed, Some(&guidance));
+                match harness.system.append_flag.as_deref() {
+                    Some(flag) => {
+                        let at = worker.iter().position(|a| a == flag).unwrap();
+                        assert!(
+                            worker[at + 1].ends_with(&format!("\n\n{guidance}")),
+                            "{kind:?}"
+                        );
+                        assert_eq!(worker.last().unwrap(), "fix the parser", "{kind:?}");
+                    }
+                    None if resumed => assert_eq!(worker, plain, "{kind:?} resumed"),
+                    None => {
+                        assert_eq!(
+                            worker.last().unwrap(),
+                            &format!("{}\n\n{guidance}", plain.last().unwrap()),
+                            "{kind:?}"
+                        );
+                        assert!(plain.last().unwrap().ends_with("fix the parser"));
+                        assert_eq!(worker[..worker.len() - 1], plain[..plain.len() - 1]);
+                    }
+                }
+            }
+        }
+        for kind in [AgentKind::Claude, AgentKind::Pi] {
+            assert!(test_harness(&test_registry(), kind)
+                .system
+                .append_flag
+                .is_some());
+        }
+        for kind in [AgentKind::Codex, AgentKind::Cursor, AgentKind::OpenCode] {
+            assert!(test_harness(&test_registry(), kind)
+                .system
+                .append_flag
+                .is_none());
+        }
+    }
+
+    #[test]
+    fn worker_guidance_names_the_base_to_open_a_pr_against_when_it_has_one() {
+        let guidance = crate::sibling::worker_guidance(Some("origin/release/2"));
+        assert!(guidance.starts_with("<nebula-worker-guidance>\n"));
+        assert!(guidance.ends_with("\n</nebula-worker-guidance>"));
+        assert!(guidance.contains("`nebula report \"<summary>\"`"));
+        assert!(guidance.contains("`gh pr create --fill --base release/2`"));
+        assert!(!guidance.contains("VERDICT"));
+        let shared = crate::sibling::worker_guidance(None);
+        assert!(shared.contains("`--pr <url>`"));
+        assert!(!shared.contains("gh pr create"), "{shared}");
     }
 
     #[test]

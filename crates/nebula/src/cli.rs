@@ -254,6 +254,38 @@ pub(crate) enum Command {
         #[arg(required = true, num_args = 1..)]
         text: Vec<String>,
     },
+    /// Report to the session that started this worker.
+    ///
+    /// Run from inside a worker's session (`nebula spawn --child`), as the
+    /// last thing in a turn: stores the text as this worker's report, over
+    /// any earlier one, for `nebula result` to show. Text over 64 KiB is
+    /// cut and marked `…[truncated]`. Prints nothing; refused for a session
+    /// no orchestrator started.
+    #[command(after_help = REPORT_EXAMPLES)]
+    Report {
+        /// The pull request this worker opened, kept as its PR.
+        #[arg(long, value_name = "URL")]
+        pr: Option<String>,
+        /// The report; multiple words need no quotes.
+        #[arg(required = true, num_args = 1..)]
+        text: Vec<String>,
+    },
+    /// Show what a worker of this session reported and left in its checkout.
+    ///
+    /// Prints one JSON object of {"id","name","kind","status",
+    /// "awaiting_turn","report","report_at","report_stale","worktree",
+    /// "branch","base","head","diff_stat","untracked","uncommitted",
+    /// "pr_url"}. report is null and report_at 0 when the worker never
+    /// reported; report_stale is true when a `nebula send` reached it after
+    /// its last report. diff_stat runs from the merge-base with base to the
+    /// working tree; untracked files are listed apart. A fact git cannot
+    /// read is null, with git's reason in an added "diff_error".
+    #[command(after_help = RESULT_EXAMPLES)]
+    Result {
+        /// Worker id, as `nebula spawn --child` printed it.
+        #[arg(value_name = "ID")]
+        id: String,
+    },
     /// Show files to the user inside this nebula.
     ///
     /// Run from inside a nebula agent session; agents run it only when you
@@ -454,6 +486,16 @@ const SEND_EXAMPLES: &str = "\
 Examples:
   nebula send 01JB7Y3K2Q now add tests for the parser
   nebula send 01JB7Y3K2Q \"rebase on main\" && nebula wait 01JB7Y3K2Q";
+
+const REPORT_EXAMPLES: &str = "\
+Examples:
+  nebula report \"DONE: parser tests added; changed src/parse.rs, tests/parse.rs\"
+  nebula report --pr https://github.com/o/r/pull/42 DONE: opened the PR
+  nebula report \"BLOCKED: git push failed: permission denied\"";
+
+const RESULT_EXAMPLES: &str = "\
+Examples:
+  nebula wait 01JB7Y3K2Q && nebula result 01JB7Y3K2Q";
 
 const OPEN_EXAMPLES: &str = "\
 Examples:

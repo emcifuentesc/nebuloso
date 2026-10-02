@@ -83,6 +83,19 @@ nebula send <id> <text…>  # the worker's next turn, typed into its prompt and 
                           # `nebula wait`). Refused, nonzero, for a message over 32 KiB, a worker
                           # that is not running, one mid-turn ("<id> is mid-turn; wait first"), or
                           # while another worker of this session works in its worktree
+nebula report [--pr <url>] <text…>
+                          # run by a worker as the last thing in a turn: the text becomes its
+                          # report, over any earlier one (cut to 64 KiB, marked …[truncated]);
+                          # --pr keeps the PR it opened. Refused from a session with no
+                          # orchestrator ("report is for workers; this session has no orchestrator").
+                          # A worker is told at spawn to report DONE: or BLOCKED: every turn
+nebula result <id>        # one JSON object for the worker: {"id","name","kind","status",
+                          # "awaiting_turn","report","report_at","report_stale","worktree","branch",
+                          # "base","head","diff_stat","untracked","uncommitted","pr_url"};
+                          # report_stale once a send reached it after its last report; diff_stat
+                          # from the merge-base with base to the working tree, untracked apart
+                          # (each capped at 200 lines); a fact git cannot read is null, with
+                          # git's reason in "diff_error"
 nebula open <file>…       # show the files in this nebula's FILE TABS — a modal with one tab per
                           # file, the focused one previewed, Enter editing it (agents run this only
                           # when you ask to see a file; text files only — an image or any other

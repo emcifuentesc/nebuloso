@@ -528,6 +528,77 @@ pub async fn config_get(repo: &Path, key: &str) -> Option<String> {
         .filter(|v| !v.is_empty())
 }
 
+/// What a worker's checkout holds, as `nebula result` reports it. A fact
+/// git could not read is None, and the first failure's reason is `error`.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct CheckoutFacts {
+    pub head: Option<String>,
+    pub diff_stat: Option<String>,
+    pub untracked: Option<Vec<String>>,
+    pub uncommitted: Option<bool>,
+    pub error: Option<String>,
+}
+
+pub const NO_BASE: &str = "worktree has no recorded base";
+
+/// [`CheckoutFacts`] for `checkout`, diffed from its merge-base with
+/// `base` to the working tree: committed, staged and unstaged changes in
+/// one stat, untracked files listed apart. The stat and the list are cut
+/// at `max_lines`.
+pub async fn checkout_facts(
+    checkout: &Path,
+    base: Option<&str>,
+    max_lines: usize,
+) -> CheckoutFacts {
+    let mut error = None;
+    let mut read = |result: Result<String>| match result {
+        Ok(out) => Some(out),
+        Err(e) => {
+            error.get_or_insert_with(|| e.to_string().lines().next().unwrap_or("").to_string());
+            None
+        }
+    };
+    let head = read(git(checkout, &["rev-parse", "--verify", "HEAD"]).await)
+        .map(|out| out.trim().to_string());
+    let diff_stat = match (&head, base) {
+        (None, _) => None,
+        (Some(_), None) => read(Err(anyhow!(NO_BASE))),
+        (Some(_), Some(base)) => match read(git(checkout, &["merge-base", base, "HEAD"]).await) {
+            Some(fork) => read(git(checkout, &["diff", "--stat", fork.trim()]).await).map(|out| {
+                out.trim_end()
+                    .lines()
+                    .take(max_lines)
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            }),
+            None => None,
+        },
+    };
+    let untracked = read(
+        git(
+            checkout,
+            &["ls-files", "-z", "--others", "--exclude-standard"],
+        )
+        .await,
+    )
+    .map(|out| {
+        out.split('\0')
+            .filter(|path| !path.is_empty())
+            .take(max_lines)
+            .map(str::to_string)
+            .collect()
+    });
+    let uncommitted =
+        read(git(checkout, &["status", "--porcelain"]).await).map(|out| !out.trim().is_empty());
+    CheckoutFacts {
+        head,
+        diff_stat,
+        untracked,
+        uncommitted,
+        error,
+    }
+}
+
 pub async fn remove_worktree(repo: &Path, worktree_path: &Path, force: bool) -> Result<()> {
     // Checkout already gone (manual rm -rf): `git worktree remove` would fail,
     // but the user's intent is already satisfied — just drop git's stale

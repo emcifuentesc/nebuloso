@@ -121,6 +121,18 @@ pub fn run_send(child: String, text: String) -> Result<()> {
     runtime()?.block_on(ipc::send_to_child(nebula_core::AgentId(child), text))
 }
 
+/// `nebula report [--pr <url>] <text>` — a worker's report to the session
+/// that started it (see `ipc::report`).
+pub fn run_report(text: String, pr_url: Option<String>) -> Result<()> {
+    runtime()?.block_on(ipc::report(text, pr_url))
+}
+
+/// `nebula result <id>` — one worker's report and checkout as JSON (see
+/// `ipc::print_child_result`).
+pub fn run_result(child: String) -> Result<()> {
+    runtime()?.block_on(ipc::print_child_result(nebula_core::AgentId(child)))
+}
+
 /// `nebula wait <id>…` — block until the workers settle and return how
 /// they did as the exit code (see `ipc::wait_for_children`).
 pub fn run_wait(

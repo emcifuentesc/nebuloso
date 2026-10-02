@@ -13,7 +13,7 @@ use std::sync::Arc;
 use anyhow::{bail, Context, Result};
 use nebula_core::{
     Agent, AgentId, AgentKind, AgentStatus, ChildSpawn, ChildStatus, EntityId, SessionRef,
-    SpawnWorktree, Worktree, WorktreeId,
+    SpawnWorktree, WorkerResult, Worktree, WorktreeId,
 };
 
 use crate::git;
@@ -42,6 +42,84 @@ matches this one. nebula starts it beside this session, in the same worktree, an
 the sessions list on its own. This session is unaffected: carry on with whatever else the user \
 asked, and if starting the session was the whole request, tell the user in one line that it is \
 running. If the command fails, report the error.";
+
+/// The longest `nebula report` kept, in UTF-8 bytes, its truncation
+/// marker included.
+pub(crate) const MAX_REPORT_BYTES: usize = 64 * 1024;
+
+const TRUNCATED: &str = "…[truncated]";
+
+/// `text` whole when it fits [`MAX_REPORT_BYTES`]; otherwise cut at a char
+/// boundary so the cut plus [`TRUNCATED`] does.
+fn truncate_report(text: &str) -> String {
+    if text.len() <= MAX_REPORT_BYTES {
+        return text.to_string();
+    }
+    let mut cut = MAX_REPORT_BYTES - TRUNCATED.len();
+    while !text.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    format!("{}{TRUNCATED}", &text[..cut])
+}
+
+/// What a worker is told at spawn about reporting back: the
+/// `nebula report` rule and, in a worktree nebula cut from `base_ref`, how
+/// to open its PR against that base. Fenced, after the task, so the task
+/// cannot fake its end.
+pub(crate) fn worker_guidance(base_ref: Option<&str>) -> String {
+    let mut text = String::from(
+        "[nebula] You are a worker started by a nebula orchestrator. When your task is finished, \
+         or you are blocked, run `nebula report \"<summary>\"` as the last thing in every turn, \
+         including turns after a follow-up message. Start the summary with `DONE:` or \
+         `BLOCKED:`, list the files changed, and pass `--pr <url>` if you opened a PR.",
+    );
+    if let Some(base) = base_ref {
+        // A worktree cut from the default branch records `origin/HEAD`, which
+        // is no branch name gh can target; without `--base` gh picks that
+        // same default branch.
+        let base_flag = match base.strip_prefix("origin/").unwrap_or(base) {
+            "HEAD" => String::new(),
+            branch => format!(" --base {branch}"),
+        };
+        text.push_str(&format!(
+            " Implementers: commit, `git push -u origin HEAD`, then `gh pr create \
+             --fill{base_flag}`. If push or `gh` fails, report `BLOCKED:` with the error's first \
+             line."
+        ));
+    }
+    format!("<nebula-worker-guidance>\n{text}\n</nebula-worker-guidance>")
+}
+
+/// `prompts` with a worker's `guidance` folded in: onto the system prompt
+/// where the harness has a flag for one, else after the first prompt of a
+/// cold spawn — a resumed transcript already holds it.
+pub(crate) fn worker_prompts(
+    prompts: crate::pr_scope::LaunchPrompts,
+    system_append: bool,
+    resumed: bool,
+    guidance: Option<&str>,
+) -> crate::pr_scope::LaunchPrompts {
+    let Some(guidance) = guidance else {
+        return prompts;
+    };
+    let join = |head: Option<String>| {
+        Some(match head {
+            Some(head) => format!("{head}\n\n{guidance}"),
+            None => guidance.to_string(),
+        })
+    };
+    match (system_append, resumed) {
+        (true, _) => crate::pr_scope::LaunchPrompts {
+            system: join(prompts.system),
+            ..prompts
+        },
+        (false, true) => prompts,
+        (false, false) => crate::pr_scope::LaunchPrompts {
+            initial: join(prompts.initial),
+            ..prompts
+        },
+    }
+}
 
 /// The first free `agent-N` among `taken` — the same default the TUI's
 /// name prompt offers, which is what makes the new row eligible for
@@ -250,7 +328,63 @@ impl Daemon {
         }) {
             bail!("{} is working in this worktree; wait first", other.id);
         }
-        self.write_turn(&agent, &session, text)
+        self.write_turn(&agent, &session, text)?;
+        self.store
+            .set_agent_last_send_at(child, nebula_core::clock::now_ms())
+    }
+
+    /// `nebula report`, run by a worker: `text`, cut to
+    /// [`MAX_REPORT_BYTES`], as its report over any earlier one, and
+    /// `pr_url` as its PR.
+    pub fn report(&self, caller: &AgentId, text: &str, pr_url: Option<&str>) -> Result<()> {
+        let agent = self.store.get_agent(caller)?.context("agent not found")?;
+        if agent.parent_agent_id.is_none() {
+            bail!("report is for workers; this session has no orchestrator");
+        }
+        let pr_url = pr_url.map(crate::pr_scope::validate_pr_url).transpose()?;
+        self.store.set_agent_report(
+            caller,
+            &truncate_report(text),
+            nebula_core::clock::now_ms(),
+            pr_url.as_deref(),
+        )
+    }
+
+    /// `nebula result <id>`: the caller's worker `child` as its report and
+    /// its checkout tell it. A checkout git cannot read is reported in the
+    /// result, never as a refusal.
+    pub async fn worker_result(&self, caller: &AgentId, child: &AgentId) -> Result<WorkerResult> {
+        let agent = self.worker_of(caller, child)?;
+        let worktree = self
+            .store
+            .get_worktree(&agent.worktree_id)?
+            .context("worktree not found")?;
+        let (report, report_at, last_send_at) = self.store.agent_report(child)?;
+        let facts = git::checkout_facts(
+            &worktree.path,
+            worktree.base_ref.as_deref(),
+            WorkerResult::MAX_LINES,
+        )
+        .await;
+        Ok(WorkerResult {
+            awaiting_turn: self.awaiting_turn(child),
+            pr_url: self.store.agent_pr_url(child)?,
+            id: agent.id,
+            name: agent.name,
+            kind: agent.kind,
+            status: agent.status,
+            report,
+            report_at,
+            report_stale: last_send_at > report_at,
+            worktree: worktree.path,
+            branch: worktree.branch,
+            base: worktree.base_ref,
+            head: facts.head,
+            diff_stat: facts.diff_stat,
+            untracked: facts.untracked,
+            uncommitted: facts.uncommitted,
+            diff_error: facts.error,
+        })
     }
 
     /// `id`'s row, when it is `caller`'s worker. Anything else — another
@@ -267,6 +401,17 @@ impl Daemon {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn worker_guidance_names_the_pr_base_only_when_it_is_a_branch() {
+        assert!(worker_guidance(Some("origin/main")).contains("gh pr create --fill --base main`"));
+        let default_branch = worker_guidance(Some("origin/HEAD"));
+        assert!(
+            default_branch.contains("gh pr create --fill`"),
+            "origin/HEAD is no branch gh can target"
+        );
+        assert!(!worker_guidance(None).contains("gh pr create"));
+    }
     use crate::hooks::HookEnv;
     use crate::store::Store;
     use nebula_core::{Agent, AgentStatus, Project, ProjectId, Worktree, WorktreeId};
@@ -674,6 +819,212 @@ mod tests {
         send(&daemon, "w", "again").unwrap();
         daemon.kill_session(&SessionRef::Agent(w.clone()));
         assert!(!awaiting(&daemon, "w"), "no PTY, nothing to wait on");
+    }
+
+    #[test]
+    fn a_report_over_64_kib_is_cut_at_a_char_boundary_to_fit_with_its_marker() {
+        let fits = "a".repeat(MAX_REPORT_BYTES);
+        assert_eq!(truncate_report(&fits), fits);
+
+        let room = MAX_REPORT_BYTES - TRUNCATED.len();
+        let text = format!("{}é{}", "a".repeat(room - 1), "b".repeat(TRUNCATED.len()));
+        let cut = truncate_report(&text);
+        assert_eq!(
+            cut,
+            format!("{}{TRUNCATED}", "a".repeat(room - 1)),
+            "the é straddling the cut goes whole"
+        );
+        assert!(cut.len() <= MAX_REPORT_BYTES);
+    }
+
+    fn report(daemon: &Daemon, id: &str, text: &str, pr: Option<&str>) -> Result<()> {
+        daemon.report(&AgentId(id.into()), text, pr)
+    }
+
+    async fn result(daemon: &Daemon, child: &str) -> Result<WorkerResult> {
+        daemon
+            .worker_result(&AgentId("lead".into()), &AgentId(child.into()))
+            .await
+    }
+
+    #[test]
+    fn report_is_refused_to_a_session_with_no_orchestrator() {
+        let daemon = daemon();
+        lead(&daemon);
+        let err = report(&daemon, "lead", "DONE: x", None).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "report is for workers; this session has no orchestrator"
+        );
+        assert_eq!(
+            daemon.store.agent_report(&AgentId("lead".into())).unwrap(),
+            (None, 0, 0)
+        );
+    }
+
+    #[test]
+    fn report_pr_is_validated_and_kept_on_the_row() {
+        let daemon = daemon();
+        lead(&daemon);
+        worker_of(&daemon, "w", "lead", "feat");
+        let err = report(
+            &daemon,
+            "w",
+            "DONE",
+            Some("https://github.com/o/r/issues/1"),
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("not a pull request URL"), "{err}");
+        let w = AgentId("w".into());
+        assert_eq!(daemon.store.agent_report(&w).unwrap().0, None);
+
+        let pr = "https://github.com/o/r/pull/7";
+        report(&daemon, "w", "DONE: opened", Some(pr)).unwrap();
+        report(&daemon, "w", "DONE: again", None).unwrap();
+        assert_eq!(daemon.store.agent_pr_url(&w).unwrap().as_deref(), Some(pr));
+        assert_eq!(
+            daemon.store.agent_report(&w).unwrap().0.as_deref(),
+            Some("DONE: again")
+        );
+    }
+
+    #[tokio::test]
+    async fn result_is_refused_for_an_agent_that_is_not_the_callers_worker() {
+        let daemon = daemon();
+        lead(&daemon);
+        daemon
+            .store
+            .insert_agent(&agent("other", "root", AgentKind::Claude, None))
+            .unwrap();
+        worker_of(&daemon, "theirs", "other", "feat");
+        for stranger in ["theirs", "lead", "missing"] {
+            let err = result(&daemon, stranger).await.unwrap_err();
+            assert_eq!(err.to_string(), format!("{stranger} is not your worker"));
+        }
+    }
+
+    #[tokio::test]
+    async fn a_report_goes_stale_once_a_send_reaches_the_worker_and_fresh_again_on_the_next() {
+        let daemon = daemon();
+        lead(&daemon);
+        worker_of(&daemon, "w", "lead", "feat");
+        set_status(&daemon, "w", AgentStatus::Finished);
+        go_live(&daemon, "w");
+        let never = result(&daemon, "w").await.unwrap();
+        assert_eq!((never.report, never.report_at), (None, 0));
+        assert!(!never.report_stale);
+
+        report(&daemon, "w", "DONE: first", None).unwrap();
+        let fresh = result(&daemon, "w").await.unwrap();
+        assert_eq!(fresh.report.as_deref(), Some("DONE: first"));
+        assert!(fresh.report_at > 0);
+        assert!(!fresh.report_stale);
+
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        send(&daemon, "w", "next").unwrap();
+        let stale = result(&daemon, "w").await.unwrap();
+        assert_eq!(stale.report.as_deref(), Some("DONE: first"));
+        assert!(stale.report_stale);
+
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        report(&daemon, "w", "DONE: second", None).unwrap();
+        assert!(!result(&daemon, "w").await.unwrap().report_stale);
+    }
+
+    fn run_git(dir: &std::path::Path, args: &[&str]) {
+        let out = std::process::Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "git {args:?}: {out:?}");
+    }
+
+    fn checkout_worker(daemon: &Daemon, path: &std::path::Path, base_ref: Option<&str>) {
+        daemon
+            .store
+            .insert_worktree(&Worktree {
+                id: WorktreeId("w-tree".into()),
+                project_id: ProjectId("p".into()),
+                path: path.to_path_buf(),
+                branch: "feat-a".into(),
+                is_main: false,
+                sort_order: 0,
+                base_ref: base_ref.map(str::to_string),
+            })
+            .unwrap();
+        worker_of(daemon, "w", "lead", "w-tree");
+    }
+
+    #[tokio::test]
+    async fn result_reads_the_workers_checkout_against_its_base() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("repo");
+        std::fs::create_dir(&repo).unwrap();
+        run_git(&repo, &["init", "-b", "main"]);
+        run_git(&repo, &["config", "user.email", "t@t"]);
+        run_git(&repo, &["config", "user.name", "t"]);
+        std::fs::write(repo.join("kept.rs"), "one\n").unwrap();
+        run_git(&repo, &["add", "."]);
+        run_git(&repo, &["commit", "-m", "init"]);
+        run_git(&repo, &["checkout", "-b", "feat-a"]);
+        std::fs::write(repo.join("committed.rs"), "fn x() {}\n").unwrap();
+        run_git(&repo, &["add", "."]);
+        run_git(&repo, &["commit", "-m", "work"]);
+        std::fs::write(repo.join("kept.rs"), "one\ntwo\n").unwrap();
+        std::fs::write(repo.join("new.rs"), "fn y() {}\n").unwrap();
+
+        let daemon = daemon();
+        lead(&daemon);
+        checkout_worker(&daemon, &repo, Some("main"));
+        let got = result(&daemon, "w").await.unwrap();
+        assert_eq!(got.diff_error, None);
+        assert_eq!(got.head.as_ref().map(String::len), Some(40));
+        let stat = got.diff_stat.unwrap();
+        assert!(
+            stat.contains("committed.rs") && stat.contains("kept.rs"),
+            "{stat}"
+        );
+        assert!(stat.contains("2 files changed"), "{stat}");
+        assert!(
+            !stat.contains("new.rs"),
+            "untracked is listed apart: {stat}"
+        );
+        assert_eq!(got.untracked, Some(vec!["new.rs".to_string()]));
+        assert_eq!(got.uncommitted, Some(true));
+        assert_eq!(got.base.as_deref(), Some("main"));
+        let json = serde_json::to_value(result(&daemon, "w").await.unwrap()).unwrap();
+        assert!(json.get("diff_error").is_none(), "{json}");
+
+        std::fs::remove_dir_all(&repo).unwrap();
+        let gone = result(&daemon, "w").await.unwrap();
+        assert_eq!(
+            (gone.head, gone.diff_stat, gone.untracked, gone.uncommitted),
+            (None, None, None, None)
+        );
+        let reason = gone.diff_error.expect("a deleted checkout says why");
+        assert!(reason.starts_with("fatal: cannot change to"), "{reason}");
+    }
+
+    #[tokio::test]
+    async fn result_without_a_recorded_base_still_reads_head_and_the_tree() {
+        let tmp = tempfile::tempdir().unwrap();
+        run_git(tmp.path(), &["init", "-b", "main"]);
+        run_git(tmp.path(), &["config", "user.email", "t@t"]);
+        run_git(tmp.path(), &["config", "user.name", "t"]);
+        run_git(tmp.path(), &["commit", "--allow-empty", "-m", "init"]);
+        let daemon = daemon();
+        lead(&daemon);
+        checkout_worker(&daemon, tmp.path(), None);
+        let got = result(&daemon, "w").await.unwrap();
+        assert!(got.head.is_some());
+        assert_eq!(got.diff_stat, None);
+        assert_eq!(got.diff_error.as_deref(), Some(git::NO_BASE));
+        assert_eq!(
+            (got.untracked, got.uncommitted),
+            (Some(Vec::new()), Some(false))
+        );
     }
 
     #[test]

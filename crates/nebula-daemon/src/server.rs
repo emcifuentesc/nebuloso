@@ -531,6 +531,29 @@ async fn handle_client(daemon: Arc<Daemon>, stream: UnixStream) -> Result<()> {
                 } => {
                     reply_done(&out_tx, req_id, daemon.send_to_child(&id, &child, &text)).await;
                 }
+                ClientRequest::Report {
+                    req_id,
+                    id,
+                    text,
+                    pr_url,
+                } => {
+                    reply_done(
+                        &out_tx,
+                        req_id,
+                        daemon.report(&id, &text, pr_url.as_deref()),
+                    )
+                    .await;
+                }
+                ClientRequest::ChildResult { req_id, id, child } => {
+                    let ev = match daemon.worker_result(&id, &child).await {
+                        Ok(result) => ServerEvent::ChildResult { req_id, result },
+                        Err(e) => ServerEvent::Error {
+                            req_id: Some(req_id),
+                            message: format!("{e:#}"),
+                        },
+                    };
+                    let _ = out_tx.send(ev).await;
+                }
                 ClientRequest::OpenFiles { req_id, id, paths } => {
                     reply_done(&out_tx, req_id, daemon.open_files(&id, paths)).await;
                 }

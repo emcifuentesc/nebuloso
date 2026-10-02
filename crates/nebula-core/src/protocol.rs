@@ -7,7 +7,7 @@ use std::path::PathBuf;
 
 /// Bump on any breaking change to these enums. The daemon refuses mismatched
 /// clients; the client then offers a kill-and-restart of the old daemon.
-pub const PROTOCOL_VERSION: u32 = 47;
+pub const PROTOCOL_VERSION: u32 = 48;
 
 /// Max IPC frame size (length prefix sanity bound).
 pub const MAX_FRAME_LEN: u32 = 4 * 1024 * 1024;
@@ -265,6 +265,22 @@ pub enum ClientRequest {
         child: AgentId,
         text: String,
     },
+    /// `nebula report [--pr <url>] <text>`, run by a worker: `text` as its
+    /// report to its orchestrator, over any earlier one, and `pr_url` as
+    /// its PR. Refused for a session with no parent. Answered with `Ack`.
+    Report {
+        req_id: u64,
+        id: AgentId,
+        text: String,
+        pr_url: Option<String>,
+    },
+    /// `nebula result <id>`: what the caller's worker `child` reported and
+    /// the state of its checkout. Answered with `ChildResult`.
+    ChildResult {
+        req_id: u64,
+        id: AgentId,
+        child: AgentId,
+    },
     /// `nebula open <file>…`, run by the agent from inside its own session:
     /// show these files to the user in every attached TUI's FILE TABS —
     /// one tab per file, the focused one previewed, Enter editing it.
@@ -461,6 +477,43 @@ impl ChildStatus {
     }
 }
 
+/// One worker's outcome as its parent sees it: what `nebula result`
+/// prints. The git facts are read off the worker's checkout when asked;
+/// one that cannot be read is null, with git's reason in `diff_error`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkerResult {
+    pub id: AgentId,
+    pub name: String,
+    pub kind: AgentKind,
+    pub status: AgentStatus,
+    pub awaiting_turn: bool,
+    /// The worker's last `nebula report`, or None if it never reported.
+    pub report: Option<String>,
+    /// When it was made, epoch ms; 0 when never.
+    pub report_at: i64,
+    /// A `nebula send` reached the worker after its last report.
+    pub report_stale: bool,
+    pub worktree: PathBuf,
+    pub branch: String,
+    /// The ref the worktree was cut from, when nebula recorded one.
+    pub base: Option<String>,
+    pub head: Option<String>,
+    /// `git diff --stat` from the merge-base with `base` to the working
+    /// tree, at most [`WorkerResult::MAX_LINES`] lines.
+    pub diff_stat: Option<String>,
+    /// Untracked, unignored paths, at most [`WorkerResult::MAX_LINES`].
+    pub untracked: Option<Vec<String>>,
+    /// `git status --porcelain` printed anything.
+    pub uncommitted: Option<bool>,
+    pub pr_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub diff_error: Option<String>,
+}
+
+impl WorkerResult {
+    pub const MAX_LINES: usize = 200;
+}
+
 /// The worktree a worker is started in: a branch that must not exist yet,
 /// cut from `base` (resolved like `nebula worktree --base`) or, without
 /// one, from the base every new worktree gets.
@@ -554,6 +607,11 @@ pub enum ServerEvent {
     ChildStatuses {
         req_id: u64,
         children: Vec<ChildStatus>,
+    },
+    /// Reply to `ChildResult`.
+    ChildResult {
+        req_id: u64,
+        result: WorkerResult,
     },
     /// Reply to `EnterWorktree`: the worktree the agent now belongs to, and
     /// what that meant for its process.

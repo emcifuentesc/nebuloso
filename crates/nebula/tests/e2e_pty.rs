@@ -4705,3 +4705,64 @@ async fn children_status_and_wait_report_the_callers_workers() {
     write_frame(&mut c, &ClientRequest::Shutdown).await.unwrap();
     wait_for_exit(&mut daemon);
 }
+
+/// `nebula report` and `nebula result` over the real binary: a worker in
+/// its own worktree reports, and its lead's `result` shows that report
+/// fresh beside the file it left untracked in the checkout. The lead
+/// itself, with no orchestrator, is refused a report.
+#[tokio::test]
+async fn a_workers_report_and_checkout_show_in_its_leads_result() {
+    let env = TestEnv::new();
+    let repo = env.make_repo();
+    let mut daemon = env.spawn_daemon_with_agent_cmd("/bin/cat");
+    let mut c = connect(&env.sock()).await;
+    handshake(&mut c).await;
+    let main_worktree = add_project_get_main_worktree(&mut c, &repo).await;
+    let lead = create_agent_get_id(&mut c, &main_worktree.id, "lead", 2).await;
+    let out = agent_cli(
+        &env,
+        &lead,
+        &[
+            "spawn",
+            "--worktree",
+            "feat-a",
+            "--base",
+            "main",
+            "write it",
+        ],
+    );
+    assert!(out.status.success(), "child spawn failed: {out:?}");
+    let line: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let worker = nebula_core::AgentId(line["id"].as_str().unwrap().into());
+    let checkout = PathBuf::from(line["worktree"].as_str().unwrap());
+    std::fs::write(checkout.join("new.rs"), "fn x() {}\n").unwrap();
+
+    let out = agent_cli(&env, &worker, &["report", "DONE:", "wrote", "new.rs"]);
+    assert!(out.status.success(), "report failed: {out:?}");
+    assert!(out.stdout.is_empty(), "{out:?}");
+
+    let out = agent_cli(&env, &lead, &["result", worker.as_str()]);
+    assert!(out.status.success(), "result failed: {out:?}");
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    assert_eq!(stdout.lines().count(), 1, "exactly one line: {stdout:?}");
+    let result: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
+    assert_eq!(result["report"], "DONE: wrote new.rs");
+    assert_eq!(result["report_stale"], false);
+    assert_eq!(result["untracked"], serde_json::json!(["new.rs"]));
+    assert_eq!(result["uncommitted"], true);
+    assert_eq!(result["branch"], "feat-a");
+    assert_eq!(result["base"], "main");
+    assert!(result["head"].is_string(), "{result}");
+    assert!(result.get("diff_error").is_none(), "{result}");
+
+    let out = agent_cli(&env, &lead, &["report", "DONE: nothing"]);
+    assert!(!out.status.success(), "a top-level report must fail");
+    assert!(
+        String::from_utf8_lossy(&out.stderr)
+            .contains("report is for workers; this session has no orchestrator"),
+        "{out:?}"
+    );
+
+    write_frame(&mut c, &ClientRequest::Shutdown).await.unwrap();
+    wait_for_exit(&mut daemon);
+}

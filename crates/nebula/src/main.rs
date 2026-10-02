@@ -63,6 +63,8 @@ fn main() -> Result<()> {
             std::process::exit(exit as i32)
         }
         Some(Command::Send { id, text }) => nebula_tui::run_send(id, text.join(" ")),
+        Some(Command::Report { pr, text }) => nebula_tui::run_report(text.join(" "), pr),
+        Some(Command::Result { id }) => nebula_tui::run_result(id),
         Some(Command::Open { files }) => nebula_tui::run_open(files),
         Some(Command::Browser {
             port,
