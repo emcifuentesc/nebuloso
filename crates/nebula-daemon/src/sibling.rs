@@ -242,6 +242,20 @@ impl Daemon {
     /// resolved against the current config and harness registry. The
     /// default roster asks PATH the way a create does.
     pub(crate) async fn orchestration_for(&self, worktree: &WorktreeId) -> Result<Orchestration> {
+        let config = crate::config::Config::load();
+        let registry = nebula_core::harness::registry(&config.harnesses, &config.custom_harnesses);
+        for kind in DEFAULT_ROSTER {
+            if let Some(harness) = registry.iter().find(|h| h.id == kind.as_str()) {
+                self.cli_available(harness.program.trim()).await;
+            }
+        }
+        self.known_orchestration(worktree)
+    }
+
+    /// [`Self::orchestration_for`] without asking PATH: the default roster
+    /// holds the harnesses the probe cache already knows are installed,
+    /// which is what a spawn, unable to wait on a probe, can tell.
+    pub(crate) fn known_orchestration(&self, worktree: &WorktreeId) -> Result<Orchestration> {
         let worktree = self
             .store
             .get_worktree(worktree)?
@@ -252,19 +266,10 @@ impl Daemon {
             .context("project not found")?;
         let config = crate::config::Config::load();
         let registry = nebula_core::harness::registry(&config.harnesses, &config.custom_harnesses);
-        let mut installed = Vec::new();
-        for kind in DEFAULT_ROSTER {
-            if let Some(harness) = registry.iter().find(|h| h.id == kind.as_str()) {
-                let program = harness.program.trim();
-                if self.cli_available(program).await {
-                    installed.push(program.to_string());
-                }
-            }
-        }
         Orchestration::resolve(
             config.orchestration(&project.repo_path).as_ref(),
             &registry,
-            &|program| installed.iter().any(|p| p == program),
+            &|program| self.cli_known_available(program),
         )
         .map_err(anyhow::Error::msg)
     }
