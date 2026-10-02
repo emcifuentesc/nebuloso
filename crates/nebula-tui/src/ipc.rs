@@ -5,7 +5,7 @@ use anyhow::{bail, Context, Result};
 use nebula_core::codec::{read_frame, write_frame};
 use nebula_core::{
     env, paths, AgentId, AgentKind, AgentStatus, ChildSpawn, ChildStatus, ClientRequest,
-    EnterOutcome, ServerEvent, PROTOCOL_VERSION,
+    EnterOutcome, ServerEvent, WorkerResult, PROTOCOL_VERSION,
 };
 use std::time::Duration;
 use tokio::net::UnixStream;
@@ -465,6 +465,67 @@ impl Workers {
         .await?;
         await_ack(&mut self.conn, req_id).await
     }
+
+    /// `text` as this session's report to its orchestrator.
+    async fn report(&mut self, text: String, pr_url: Option<String>) -> Result<()> {
+        let req_id = self.next_req_id;
+        self.next_req_id += 1;
+        write_frame(
+            &mut self.conn.stream,
+            &ClientRequest::Report {
+                req_id,
+                id: self.caller.clone(),
+                text,
+                pr_url,
+            },
+        )
+        .await?;
+        await_ack(&mut self.conn, req_id).await
+    }
+
+    /// Worker `child`'s report and checkout. A refusal is the daemon's
+    /// message as an `Err`.
+    async fn result(&mut self, child: AgentId) -> Result<WorkerResult> {
+        let req_id = self.next_req_id;
+        self.next_req_id += 1;
+        write_frame(
+            &mut self.conn.stream,
+            &ClientRequest::ChildResult {
+                req_id,
+                id: self.caller.clone(),
+                child,
+            },
+        )
+        .await?;
+        loop {
+            match read_frame::<ServerEvent, _>(&mut self.conn.stream).await? {
+                Some(ServerEvent::ChildResult { req_id: r, result }) if r == req_id => {
+                    return Ok(result)
+                }
+                Some(ServerEvent::Error {
+                    req_id: Some(r),
+                    message,
+                }) if r == req_id => bail!("{message}"),
+                Some(_) => continue,
+                None => bail!("{CLOSED_BEFORE_REPLY}"),
+            }
+        }
+    }
+}
+
+/// CLI: `nebula report [--pr <url>] <text>`, from inside a worker's
+/// session: `text` as its report to the session that started it. Prints
+/// nothing; a refusal is a nonzero exit with the daemon's message.
+pub async fn report(text: String, pr_url: Option<String>) -> Result<()> {
+    Workers::connect("report").await?.report(text, pr_url).await
+}
+
+/// CLI: `nebula result <id>`, from inside an agent session: this session's
+/// worker `child` as one JSON object of `WorkerResult`.
+pub async fn print_child_result(child: AgentId) -> Result<()> {
+    let result = Workers::connect("result").await?.result(child).await?;
+    println!("{}", serde_json::to_string(&result)?);
+    Ok(())
 }
 
 fn print_statuses(children: &[ChildStatus]) -> Result<()> {
