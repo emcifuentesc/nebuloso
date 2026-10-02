@@ -8,14 +8,16 @@
 
 use super::{
     ago_badge, below_first_row, centered_rect, empty_list_row, fit_ago, fuzzy_highlight_spans,
-    over_box_rect, render_modal_frame, render_row, row_rect, search_line, status_dot,
+    over_box_rect, render_modal_frame, render_row, row_rect, search_line, status_color, status_dot,
     status_name_spans, sweep_ramp, truncate, visible_positions, NO_MATCHES, OVER_BOX_INSET,
     PENDING_SESSION_BADGE,
 };
 use crate::app::{App, Focus, HitTarget, Overlay};
 use crate::launcher::{BoxField, Hidden, LauncherRow, ProjectPicker, ProjectTab, Tally};
+use crate::nesting::Nest;
 use crate::quick_prompt::QuickLaunch;
 use crate::theme::Theme;
+use nebula_core::AgentStatus;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
@@ -131,7 +133,8 @@ fn settle_panel_scroll(
     scroll
 }
 
-/// What the header counts: the cards on the grid, by kind.
+/// What the header counts: the cards on the grid, by kind — a WORKER
+/// listed under its orchestrator and again in its own checkout once.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 struct HeadCount {
     sessions: usize,
@@ -141,7 +144,15 @@ struct HeadCount {
 impl HeadCount {
     fn of(bands: &[crate::launcher::Band]) -> Self {
         Self {
-            sessions: bands.iter().map(|b| b.sessions()).sum(),
+            sessions: bands
+                .iter()
+                .flat_map(|b| &b.cards)
+                .filter_map(|c| match c {
+                    crate::launcher::Card::Session(row) => Some(&row.agent.id),
+                    crate::launcher::Card::Terminal(_) => None,
+                })
+                .collect::<std::collections::HashSet<_>>()
+                .len(),
             terminals: bands.iter().map(|b| b.terminals()).sum(),
         }
     }
@@ -1235,6 +1246,13 @@ struct StripMore {
     centered: bool,
 }
 
+/// What a WORKER nested under its orchestrator hangs from, and what a
+/// worker listed in its own checkout points up at its orchestrator with.
+const NEST_BRANCH: &str = "└ ";
+const NEST_UP: &str = "↑";
+/// The fewest columns a tally or a `↑` mark is cut to before it goes.
+const NEST_TAG_MIN: usize = 4;
+
 /// What the cursor's LIST entry wears in front of it.
 const LIST_MARK: &str = "▌ ";
 /// Columns a LIST entry spends before its name: the cursor mark and the
@@ -1295,17 +1313,17 @@ fn draw_list_band(
     for &i in &shown {
         let (name, runs) = match &band.cards[i] {
             crate::launcher::Card::Session(row) => (
-                row.agent.name.chars().count(),
+                row.agent.name.chars().count().min(LIST_NAME_MAX) + nest_w(&row.nest),
                 runs_on_line(&row.agent, cfg).chars().count(),
             ),
             crate::launcher::Card::Terminal(t) => (
-                t.name.chars().count(),
+                t.name.chars().count().min(LIST_NAME_MAX),
                 t.run_command.as_deref().unwrap_or("shell").chars().count(),
             ),
         };
         cols = (cols.0.max(name), cols.1.max(runs));
     }
-    let cols = (cols.0.min(LIST_NAME_MAX), cols.1.min(LIST_RUNS_MAX));
+    let cols = (cols.0, cols.1.min(LIST_RUNS_MAX));
     for &i in &shown {
         let Some(placed) = pb
             .cell(i)
@@ -1378,8 +1396,10 @@ fn draw_list_row(
         Span::raw("  ")
     };
     struct Entry {
+        branch: &'static str,
         lead: Span<'static>,
         name: String,
+        tag: Option<String>,
         name_style: Style,
         ramp: Option<[Color; 3]>,
         runs: String,
@@ -1393,11 +1413,13 @@ fn draw_list_row(
     let e = match card {
         crate::launcher::Card::Session(row) => {
             let a = &row.agent;
-            let look = session_look(app, a, selected, th);
+            let look = session_look(app, a, &row.nest, selected, th);
             let quiet_or = |live: Color| if a.archived { look.quiet } else { live };
             Entry {
+                branch: look.branch,
                 lead: look.dot,
                 name: a.name.clone(),
+                tag: look.tag,
                 name_style: look.name_style,
                 ramp: look.ramp,
                 runs: runs_on_line(a, cfg),
@@ -1412,6 +1434,8 @@ fn draw_list_row(
             }
         }
         crate::launcher::Card::Terminal(t) => Entry {
+            branch: "",
+            tag: None,
             lead: Span::styled(
                 if t.run_command.is_some() {
                     "▶ "
@@ -1441,7 +1465,11 @@ fn draw_list_row(
             badge_style: Style::default().fg(th.err),
         },
     };
-    let mut spans = vec![mark, e.lead];
+    let mut spans = vec![mark];
+    if !e.branch.is_empty() {
+        spans.push(Span::styled(e.branch, Style::default().fg(th.dim)));
+    }
+    spans.push(e.lead);
     let mut room = width.saturating_sub(usize::from(LIST_LEAD));
     // The badge at the right end, while the name keeps a few letters.
     let badge = e.badge.trim().to_string();
@@ -1451,14 +1479,20 @@ fn draw_list_row(
         room -= badge_w + 1;
     }
     let name_w = name_col.max(1).min(room);
-    let name = truncate(&e.name, name_w);
-    let mut used = name.chars().count();
+    let branch_w = e.branch.chars().count();
+    let (name, tag) = fit_name(&e.name, e.tag.as_deref(), name_w.saturating_sub(branch_w));
+    let mut used = branch_w + name.chars().count();
     spans.extend(status_name_spans(
         name,
         e.name_style,
         e.ramp,
         app.sweep_phase(),
     ));
+    if let Some(tag) = tag {
+        used += 1 + tag.chars().count();
+        spans.push(Span::raw(" "));
+        spans.push(Span::styled(tag, e.runs_style));
+    }
     // What it runs on, in the band's column, and the prompt after it —
     // each only where there is room for a few letters of it.
     let runs_at = name_w + LIST_GAP;
@@ -2118,13 +2152,15 @@ fn draw_card(
     let cold = !a.alive && a.cloud_session_id.is_none();
     let archived = a.archived;
     let SessionLook {
+        branch,
         dot,
+        tag,
         quiet,
         name_style,
         ramp,
         ago,
         ago_style,
-    } = session_look(app, a, selected, th);
+    } = session_look(app, a, &row.nest, selected, th);
     let quiet_or = |live: Color| if archived { quiet } else { live };
     // On the raised fill the dim parts step up to muted and the prompt to
     // text, so nothing on the cursor's card sinks into its background.
@@ -2163,10 +2199,24 @@ fn draw_card(
     }
 
     let (ago, name_max) = fit_ago(ago, width);
-    let name = truncate(&a.name, name_max.saturating_sub(2));
-    let mut first = vec![dot];
-    let used = name.chars().count() + 2;
+    let branch_w = branch.chars().count();
+    let (name, tag) = fit_name(
+        &a.name,
+        tag.as_deref(),
+        name_max.saturating_sub(2 + branch_w),
+    );
+    let mut first = Vec::new();
+    if !branch.is_empty() {
+        first.push(Span::styled(branch, Style::default().fg(quiet_or(dim))));
+    }
+    first.push(dot);
+    let mut used = branch_w + name.chars().count() + 2;
     first.extend(status_name_spans(name, name_style, ramp, app.sweep_phase()));
+    if let Some(tag) = tag {
+        used += 1 + tag.chars().count();
+        first.push(Span::raw(" "));
+        first.push(Span::styled(tag, Style::default().fg(quiet_or(dim))));
+    }
     if !ago.is_empty() {
         let ago = ago.trim_start().to_string();
         let pad = width.saturating_sub(used + ago.chars().count());
@@ -2300,8 +2350,15 @@ fn card_issue_hit(
 /// How a session shows its state wherever the grid draws it — a card's
 /// head, a LIST entry — so the two never disagree.
 struct SessionLook {
-    /// The STATUS DOT, or an archived card's square.
+    /// What a WORKER drawn under its orchestrator hangs from, ahead of
+    /// its dot; empty on every other row.
+    branch: &'static str,
+    /// The STATUS DOT, or an archived card's square. An orchestrator with
+    /// a worker blocked on the user wears that worker's red.
     dot: Span<'static>,
+    /// What follows the name: an orchestrator's tally of its workers, or
+    /// a worker's `↑` and the orchestrator it answers to.
+    tag: Option<String>,
     /// What an archived session's every part is drawn in, and a live
     /// one's age: dim, a step up on the cursor's entry.
     quiet: Color,
@@ -2325,7 +2382,13 @@ struct SessionLook {
 /// whole grid's answer to "which of the two lists am I looking at" without
 /// a word repeated on every card - the header's `n archived sessions` says
 /// that once.
-fn session_look(app: &App, a: &nebula_core::Agent, selected: bool, th: Theme) -> SessionLook {
+fn session_look(
+    app: &App,
+    a: &nebula_core::Agent,
+    nest: &Nest,
+    selected: bool,
+    th: Theme,
+) -> SessionLook {
     let pending = app.is_placeholder_agent(&a.id);
     let cold = !a.alive && a.cloud_session_id.is_none();
     let archived = a.archived;
@@ -2343,6 +2406,18 @@ fn session_look(app: &App, a: &nebula_core::Agent, selected: bool, th: Theme) ->
         }
     } else {
         status_dot(Some(a.status), a.unseen, th)
+    };
+    let dot = match nest {
+        Nest::Top(rollup) if rollup.needs_you() && !archived => Span {
+            style: Style::default().fg(status_color(Some(AgentStatus::NeedsFeedback), false, th)),
+            ..dot
+        },
+        _ => dot,
+    };
+    let (branch, tag) = match nest {
+        Nest::Top(rollup) => ("", rollup.label()),
+        Nest::Child => (NEST_BRANCH, None),
+        Nest::Marked { parent } => ("", Some(format!("{NEST_UP}{parent}"))),
     };
     let ramp = if pending || cold || archived {
         None
@@ -2378,12 +2453,39 @@ fn session_look(app: &App, a: &nebula_core::Agent, selected: bool, th: Theme) ->
         Style::default().fg(quiet)
     };
     SessionLook {
+        branch,
         dot,
+        tag,
         quiet,
         name_style,
         ramp,
         ago,
         ago_style,
+    }
+}
+
+/// `name` and the `tag` after it in `room` columns: the name first, the
+/// tag in what is left past a space, cut before it would be cut to
+/// nothing — a narrow card names its session before it tallies workers.
+fn fit_name(name: &str, tag: Option<&str>, room: usize) -> (String, Option<String>) {
+    let name = truncate(name, room);
+    let left = room.saturating_sub(name.chars().count() + 1);
+    let tag = tag
+        .filter(|_| left >= NEST_TAG_MIN)
+        .map(|t| truncate(t, left));
+    (name, tag)
+}
+
+/// Columns a LIST entry's nesting adds to its name: the `└ ` ahead of
+/// it, or the tally or `↑` mark after it, which the name column makes
+/// room for on top of `LIST_NAME_MAX`.
+fn nest_w(nest: &Nest) -> usize {
+    match nest {
+        Nest::Top(rollup) => rollup.label().map_or(0, |t| 1 + t.chars().count()),
+        Nest::Child => NEST_BRANCH.chars().count(),
+        Nest::Marked { parent } => {
+            1 + NEST_UP.chars().count() + parent.chars().count().min(LIST_NAME_MAX)
+        }
     }
 }
 
@@ -5576,5 +5678,218 @@ mod tests {
         assert_eq!(colored(&live, 2, th.dim), "claude");
         assert_eq!(colored(&gone, 2, th.dim), "claude");
         assert_eq!(colored(&live, 2, th.root), "");
+    }
+
+    // ---- ORCHESTRATOR NESTING ----
+
+    /// `api` as an orchestrator leaves it: `orchestrate` in the root
+    /// checkout, and its three workers, one per checkout of their own —
+    /// `fix-auth`, then `add-search`, which is blocked on the user, then
+    /// `tidy-css` — created in that order.
+    fn a_fleet() -> App {
+        use nebula_core::{Agent, AgentId, AgentKind, AgentStatus, Worktree, WorktreeId};
+        let mut app = a_tree();
+        app.tree.worktrees.truncate(1);
+        app.tree.worktrees[0].is_main = true;
+        app.tree.worktrees[0].branch = "main".into();
+        for (i, branch) in ["auth", "search", "css"].iter().enumerate() {
+            app.tree.worktrees.push(Worktree {
+                id: WorktreeId(format!("w{}", i + 1)),
+                project_id: app.tree.projects[0].id.clone(),
+                path: format!("/tmp/{branch}").into(),
+                branch: (*branch).into(),
+                is_main: false,
+                sort_order: i as i64 + 1,
+                base_ref: None,
+            });
+        }
+        let agent = |id: &str, wt: &str, name: &str, status, parent: Option<&str>| Agent {
+            id: AgentId(id.into()),
+            worktree_id: WorktreeId(wt.into()),
+            name: name.into(),
+            status,
+            archived: false,
+            archived_at: 0,
+            unseen: false,
+            kind: AgentKind::Claude,
+            custom_harness: None,
+            model: None,
+            effort: None,
+            session_id: None,
+            cloud_session_id: None,
+            sort_order: 0,
+            status_changed_at: 0,
+            alive: true,
+            issue_url: None,
+            recent_prompts: Vec::new(),
+            parent_agent_id: parent.map(|p| AgentId(p.into())),
+            role: None,
+            unattended: false,
+            purpose: None,
+            orchestrator: parent.is_none(),
+        };
+        app.tree.agents = vec![
+            agent("o", "w0", "orchestrate", AgentStatus::Running, None),
+            agent("c3", "w3", "tidy-css", AgentStatus::Finished, Some("o")),
+            agent("c1", "w1", "fix-auth", AgentStatus::Running, Some("o")),
+            agent(
+                "c2",
+                "w2",
+                "add-search",
+                AgentStatus::NeedsFeedback,
+                Some("o"),
+            ),
+        ];
+        select(&mut app, "api");
+        app.launcher_list = true;
+        app.launcher_all_open = true;
+        app
+    }
+
+    fn fleet_lines(app: &mut App, width: u16) -> Vec<String> {
+        drawn_lines(app, Rect::new(0, 0, width, 60))
+            .into_iter()
+            .map(|l| l.trim_end().to_string())
+            .filter(|l| !l.trim().is_empty())
+            .collect()
+    }
+
+    /// The line naming `name`, from `from` on.
+    fn line_of(lines: &[String], name: &str, from: usize) -> usize {
+        from + lines[from..]
+            .iter()
+            .position(|l| l.contains(name))
+            .unwrap_or_else(|| panic!("{name} is listed: {lines:#?}"))
+    }
+
+    /// The root's band lists the orchestrator with its tally, its workers
+    /// under it on a `└ `, oldest first; each worker's own band lists it
+    /// again, pointing up at the orchestrator.
+    #[test]
+    fn workers_nest_under_their_orchestrator_and_point_up_from_home() {
+        let mut app = a_fleet();
+        let lines = fleet_lines(&mut app, 110);
+        let head = line_of(&lines, "orchestrate", 0);
+        assert!(
+            lines[head].contains("● orchestrate 1 running · 1 waiting · 1 done"),
+            "{lines:#?}"
+        );
+        for (i, name) in ["fix-auth", "add-search", "tidy-css"].iter().enumerate() {
+            let at = head + 1 + i;
+            assert!(
+                lines[at].contains(&format!("└ ● {name}")),
+                "{name} nested under it, in order: {lines:#?}"
+            );
+            assert!(!lines[at].contains('↑'), "{:?}", lines[at]);
+        }
+        let mut from = head + 4;
+        for name in ["fix-auth", "add-search", "tidy-css"] {
+            let at = line_of(&lines, name, from);
+            assert!(
+                lines[at].contains(&format!("● {name} ↑orchestrate")),
+                "{name} at home names its orchestrator: {:?}",
+                lines[at]
+            );
+            assert!(!lines[at].contains('└'), "{:?}", lines[at]);
+            from = at + 1;
+        }
+        assert!(
+            lines[0].ends_with("4 sessions"),
+            "each agent counted once: {:?}",
+            lines[0]
+        );
+
+        app.launcher_list = false;
+        let cards = fleet_lines(&mut app, 160);
+        let screen = cards.join("\n");
+        assert!(
+            screen.contains("● orchestrate 1 running · 1 wait…"),
+            "a card cuts the tally to fit: {screen}"
+        );
+        for name in ["fix-auth", "add-search", "tidy-css"] {
+            assert!(screen.contains(&format!("└ ● {name}")), "{screen}");
+            assert!(
+                screen.contains(&format!("● {name} ↑orchestrate")),
+                "{screen}"
+            );
+        }
+    }
+
+    /// A worker blocked on the user turns its orchestrator's dot red,
+    /// whatever the orchestrator's own status; once it is answered the
+    /// dot is the orchestrator's again.
+    #[test]
+    fn a_blocked_worker_turns_its_orchestrators_dot_red() {
+        let mut app = a_fleet();
+        let th = app.theme;
+        let dot_fg = |app: &mut App| {
+            let body = Rect::new(0, 0, 110, 30);
+            let mut terminal =
+                ratatui::Terminal::new(ratatui::backend::TestBackend::new(body.width, body.height))
+                    .unwrap();
+            terminal.draw(|f| draw(f, app, body)).unwrap();
+            let buf = terminal.backend().buffer().clone();
+            let y = (0..body.height)
+                .find(|&y| {
+                    (0..body.width)
+                        .map(|x| buf[(x, y)].symbol().to_string())
+                        .collect::<String>()
+                        .contains("● orchestrate")
+                })
+                .expect("the orchestrator's entry");
+            let x = (0..body.width)
+                .find(|&x| buf[(x, y)].symbol() == "●")
+                .unwrap();
+            buf[(x, y)].fg
+        };
+        let red = super::super::status_color(Some(AgentStatus::NeedsFeedback), false, th);
+        assert_eq!(dot_fg(&mut app), red);
+        app.tree.agents[3].status = AgentStatus::Running;
+        assert_eq!(
+            dot_fg(&mut app),
+            super::super::status_color(Some(AgentStatus::Running), false, th)
+        );
+        assert_eq!(
+            app.tree.agents[0].status,
+            AgentStatus::Running,
+            "derived, not set"
+        );
+    }
+
+    /// On a narrow entry the tally gives way before the name does.
+    #[test]
+    fn a_narrow_entry_cuts_the_tally_before_the_name() {
+        let mut app = a_fleet();
+        let wide = fleet_lines(&mut app, 110);
+        let narrow = fleet_lines(&mut app, 30);
+        let head = line_of(&narrow, "orchestrate", 0);
+        assert!(narrow[head].contains("orchestrate"), "{narrow:#?}");
+        assert!(
+            !narrow[head].contains("1 done"),
+            "the tally was cut: {:?}",
+            narrow[head]
+        );
+        assert!(wide[line_of(&wide, "orchestrate", 0)].contains("1 done"));
+    }
+
+    /// An archived orchestrator orchestrates nothing: its workers are
+    /// listed in their own checkouts alone, with no mark pointing up.
+    #[test]
+    fn an_archived_orchestrators_workers_stand_alone() {
+        let mut app = a_fleet();
+        app.tree.agents[0].archived = true;
+        let lines = fleet_lines(&mut app, 110);
+        assert!(
+            !lines.iter().any(|l| l.contains("orchestrate")),
+            "{lines:#?}"
+        );
+        for name in ["fix-auth", "add-search", "tidy-css"] {
+            let shown: Vec<&String> = lines.iter().filter(|l| l.contains(name)).collect();
+            assert_eq!(shown.len(), 1, "{name} once: {lines:#?}");
+            assert!(
+                !shown[0].contains('↑') && !shown[0].contains('└'),
+                "{shown:?}"
+            );
+        }
     }
 }
