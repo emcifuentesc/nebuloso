@@ -468,6 +468,22 @@ pub struct ChildSpawn {
     /// harness, model, effort and unattended flag come from that entry.
     #[serde(default)]
     pub role: Option<String>,
+    /// Start a reviewer (`nebula spawn --review`) in the existing worktree
+    /// `worktree` names instead of a new one, told to review its branch and
+    /// change nothing.
+    #[serde(default)]
+    pub review: bool,
+}
+
+impl ChildSpawn {
+    /// What the worker is started to do, which its role must allow.
+    pub fn purpose(&self) -> Role {
+        if self.review {
+            Role::Review
+        } else {
+            Role::Implement
+        }
+    }
 }
 
 /// One worker as its parent sees it: what `nebula children`, `status` and

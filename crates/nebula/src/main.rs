@@ -49,6 +49,7 @@ fn main() -> Result<()> {
             base,
             model,
             effort,
+            review,
         }) => {
             let child =
                 (child || worktree.is_some() || role.is_some()).then(|| nebula_core::ChildSpawn {
@@ -56,6 +57,7 @@ fn main() -> Result<()> {
                     model,
                     effort,
                     role,
+                    review,
                 });
             nebula_tui::run_spawn(task.join(" "), kind, child)
         }

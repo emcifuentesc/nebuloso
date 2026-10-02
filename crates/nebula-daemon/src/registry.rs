@@ -141,7 +141,7 @@ pub struct Daemon {
     pub shutdown: tokio_util::sync::CancellationToken,
     /// Serializes worktree create/delete with the background auto-sync so
     /// a checkout is never adopted twice while its row is mid-insert.
-    worktree_ops: tokio::sync::Mutex<()>,
+    pub(crate) worktree_ops: tokio::sync::Mutex<()>,
     /// Warm agent CLIs awaiting adoption, at most one per (worktree, kind).
     prewarmed: Mutex<HashMap<(WorktreeId, AgentKind), PrewarmEntry>>,
     /// Cached `command -v` results per CLI so a missing binary doesn't get
@@ -2566,10 +2566,9 @@ impl Daemon {
                 &self.known_orchestration(&worktree.id)?,
             ))
         } else {
-            agent
-                .parent_agent_id
-                .is_some()
-                .then(|| crate::sibling::worker_guidance(worktree.base_ref.as_deref()))
+            agent.parent_agent_id.is_some().then(|| {
+                crate::sibling::worker_guidance(worktree.base_ref.as_deref(), agent.purpose)
+            })
         };
         let prompts = spawn_prompts(
             &harness,
@@ -4075,7 +4074,7 @@ mod tests {
     /// is what it was before workers existed.
     #[test]
     fn worker_guidance_rides_the_system_flag_or_trails_the_first_prompt() {
-        let guidance = crate::sibling::worker_guidance(Some("origin/main"));
+        let guidance = crate::sibling::worker_guidance(Some("origin/main"), None);
         for kind in AgentKind::ALL {
             if matches!(kind, AgentKind::Custom) {
                 continue;
@@ -4158,13 +4157,13 @@ mod tests {
 
     #[test]
     fn worker_guidance_names_the_base_to_open_a_pr_against_when_it_has_one() {
-        let guidance = crate::sibling::worker_guidance(Some("origin/release/2"));
+        let guidance = crate::sibling::worker_guidance(Some("origin/release/2"), None);
         assert!(guidance.starts_with("<nebula-worker-guidance>\n"));
         assert!(guidance.ends_with("\n</nebula-worker-guidance>"));
         assert!(guidance.contains("`nebula report \"<summary>\"`"));
         assert!(guidance.contains("`gh pr create --fill --base release/2`"));
         assert!(!guidance.contains("VERDICT"));
-        let shared = crate::sibling::worker_guidance(None);
+        let shared = crate::sibling::worker_guidance(None, None);
         assert!(shared.contains("`--pr <url>`"));
         assert!(!shared.contains("gh pr create"), "{shared}");
     }

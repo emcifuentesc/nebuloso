@@ -70,6 +70,14 @@ nebula spawn --child [--role <key>] [--worktree <branch> [--base <ref>]] [--mode
                           # "role <key> cannot implement" when its roles leave implement out;
                           # a worker cannot start workers, and a session may have max_children
                           # unarchived ones (8 unless the orchestration setting says otherwise)
+nebula spawn --worktree <branch> --review [--role <key>] <task>
+                          # start a reviewer worker in the existing worktree on <branch>: one in
+                          # this project where a worker of this session lives and every such
+                          # worker is settled, else "<id> is working in this worktree; wait
+                          # first" or "branch <b> exists and is not one of your workers'
+                          # worktrees"; it is told to review the branch against its base, change
+                          # nothing and report "VERDICT: APPROVE" or "VERDICT: CHANGES" first;
+                          # a --role must include review ("role <key> cannot review")
 nebula roster             # the roster this session's workers start from, resolved for its project,
                           # as one JSON object: {"roster":{"<key>":{"kind","model","effort",
                           # "roles","unattended"},…},"max_children":N,
