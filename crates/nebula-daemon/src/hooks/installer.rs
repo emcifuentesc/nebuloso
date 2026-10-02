@@ -147,12 +147,23 @@ fn hook_command(endpoint: &str, event: &str) -> String {
 /// permission prompt: the auto-title `nebula rename`, and the `nebula
 /// worktree` relocation, `nebula spawn` sibling and `nebula open` file tabs
 /// its appended system prompt tells it to use (codex/cursor run with their
-/// skip-permissions flags).
+/// skip-permissions flags), plus the orchestration commands an orchestrator
+/// loops on and a worker reports with. Those act only on the caller's own
+/// workers, so a prompt on each would only stall the loop.
 const CLAUDE_ALLOW_RULES: &[&str] = &[
     "Bash(nebula rename:*)",
     "Bash(nebula worktree:*)",
     "Bash(nebula spawn:*)",
     "Bash(nebula open:*)",
+    "Bash(nebula children:*)",
+    "Bash(nebula status:*)",
+    "Bash(nebula wait:*)",
+    "Bash(nebula send:*)",
+    "Bash(nebula report:*)",
+    "Bash(nebula result:*)",
+    "Bash(nebula roster:*)",
+    "Bash(nebula archive:*)",
+    "Bash(nebula goal:*)",
 ];
 
 /// Cursor variant: the payload arrives on stdin like Claude's, but cursor
