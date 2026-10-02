@@ -19,6 +19,7 @@ use crossterm::event::{
     Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
 use futures::StreamExt;
+use nebula_core::paste::bracketed;
 use nebula_core::{
     AgentId, AgentKind, ClientRequest, EntityId, ProjectId, ServerEvent, SessionRef, TerminalId,
     WorktreeId, MAX_CLOUD_PROMPT_BYTES,
@@ -85,11 +86,6 @@ const FALLBACK_PANE: (u16, u16) = (80, 24);
 /// Where a menu hangs when there is no drawn word to hang it under: near
 /// the top left, where the selected row lives.
 pub(super) const KEYBOARD_MENU_ANCHOR: (u16, u16) = (30, 4);
-
-/// Bracketed-paste markers around a pasted block, so the child (claude,
-/// vim…) takes it as one paste rather than typing to auto-indent.
-const PASTE_START: &[u8] = b"\x1b[200~";
-const PASTE_END: &[u8] = b"\x1b[201~";
 
 /// Flash for an action that needs a checkout to act on and has none.
 const SELECT_CONTEXT_FIRST: &str = "select a project or worktree first";
@@ -2602,14 +2598,6 @@ fn drops_project_dropdown(app: &App, chord: &crate::keymap::KeyChord) -> bool {
             .contains(chord)
 }
 
-/// `text` wrapped in the bracketed-paste markers, ready for a PTY.
-fn bracketed(text: &str) -> Vec<u8> {
-    let mut data = PASTE_START.to_vec();
-    data.extend_from_slice(text.as_bytes());
-    data.extend_from_slice(PASTE_END);
-    data
-}
-
 /// `text` as a terminal pastes it into the program on `screen`: bracketed
 /// when the program turned bracketed paste on (a shell's line editor,
 /// claude, vim), so it takes the text as one block; otherwise as though
@@ -2786,13 +2774,9 @@ fn follow_up_key(app: &mut App, key: KeyEvent, out: &mut Vec<ClientRequest>) -> 
 /// Enter in the composer: what it holds goes to the agent as its next turn
 /// and the card folds back up.
 ///
-/// The text crosses as a BRACKETED PASTE when it has line breaks — the
-/// CLI (claude, codex…) then takes it as one block instead of auto-indenting
-/// it into mush — and as plain bytes when it is the one line it usually is,
-/// which keeps it out of the "[Pasted text]" placeholder those CLIs fold a
-/// paste into. The carriage return that submits it is a second `Input` of
-/// its own, so the child's read of the prompt and its read of the Enter are
-/// two reads and it has the prompt in hand before the Enter arrives.
+/// The text and the carriage return that submits it cross as two `Input`s,
+/// the bytes [`nebula_core::paste::turn_writes`] makes — the same ones
+/// `nebula send` writes.
 ///
 /// A session with no live PTY behind it — reaped by the IDLE REAPER, or
 /// cold since the daemon started — is booted first and the box kept as it
@@ -2835,13 +2819,9 @@ enum TurnSent {
 /// one send behind both composers, the card's box and the LAUNCHER VIEW's
 /// modal.
 ///
-/// The text crosses as a BRACKETED PASTE when it has line breaks — the
-/// CLI (claude, codex…) then takes it as one block instead of auto-indenting
-/// it into mush — and as plain bytes when it is the one line it usually is,
-/// which keeps it out of the "[Pasted text]" placeholder those CLIs fold a
-/// paste into. The carriage return that submits it is a second `Input` of
-/// its own, so the child's read of the prompt and its read of the Enter are
-/// two reads and it has the prompt in hand before the Enter arrives.
+/// The text and the carriage return that submits it cross as two `Input`s,
+/// the bytes [`nebula_core::paste::turn_writes`] makes — the same ones
+/// `nebula send` writes.
 ///
 /// It attaches only when it has to: a session with no live PTY behind it —
 /// reaped by the IDLE REAPER, or cold since the daemon started — is booted
@@ -2862,19 +2842,15 @@ fn send_turn(app: &mut App, id: &AgentId, text: &str, out: &mut Vec<ClientReques
         ));
         return TurnSent::Booting;
     }
-    let data = if text.contains('\n') {
-        bracketed(text)
-    } else {
-        text.as_bytes().to_vec()
-    };
+    let [prompt, enter] = nebula_core::paste::turn_writes(text);
     out.push(ClientRequest::Input {
         session: sref.clone(),
-        data,
+        data: prompt,
     });
     typed_into(app, &sref);
     out.push(ClientRequest::Input {
         session: sref,
-        data: b"\r".to_vec(),
+        data: enter,
     });
     app.flash = Some(format!("sent to {}", agent.name));
     TurnSent::Sent
