@@ -108,6 +108,24 @@ pub fn run_spawn(
     runtime()?.block_on(ipc::spawn_sibling_for_current_agent(&task, kind, child))
 }
 
+/// `nebula children` (no `ids`) / `nebula status <id>…` — print this
+/// session's workers as JSON (see `ipc::print_child_statuses`).
+pub fn run_child_status(ids: Vec<String>, verb: &str) -> Result<()> {
+    let ids = ids.into_iter().map(nebula_core::AgentId).collect();
+    runtime()?.block_on(ipc::print_child_statuses(ids, verb))
+}
+
+/// `nebula wait <id>…` — block until the workers settle and return how
+/// they did as the exit code (see `ipc::wait_for_children`).
+pub fn run_wait(
+    ids: Vec<String>,
+    any: bool,
+    timeout: std::time::Duration,
+) -> Result<ipc::WaitExit> {
+    let ids = ids.into_iter().map(nebula_core::AgentId).collect();
+    runtime()?.block_on(ipc::wait_for_children(ids, any, timeout))
+}
+
 /// `nebula add <dir>` / bare `nebula <dir>` — register a directory as a
 /// project (see `ipc::add_project`).
 pub fn run_add_project(path: String) -> Result<()> {

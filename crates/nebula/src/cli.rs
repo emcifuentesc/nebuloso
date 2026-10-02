@@ -53,6 +53,20 @@ Examples:
 
 Run `nebula <command> --help` for a command's flags and examples.";
 
+/// `--timeout` for `nebula wait`: a whole number with `s`, `m` or `h`.
+fn parse_duration(s: &str) -> Result<std::time::Duration, String> {
+    let invalid =
+        || format!("invalid duration `{s}` — expected a number with s, m or h, like 90s, 5m or 1h");
+    let unit = match s.chars().last() {
+        Some('s') => 1,
+        Some('m') => 60,
+        Some('h') => 60 * 60,
+        _ => return Err(invalid()),
+    };
+    let n = s[..s.len() - 1].parse::<u64>().map_err(|_| invalid())?;
+    Ok(std::time::Duration::from_secs(n * unit))
+}
+
 /// `--kind` for `nebula spawn`: one of the agent CLIs nebula runs. A bare
 /// `custom` is never accepted: custom harnesses carry a registry id the
 /// flag cannot name, so they launch from the TUI picker and presets.
@@ -181,6 +195,45 @@ pub(crate) enum Command {
         /// Reasoning effort for the worker's CLI, instead of this session's.
         #[arg(long, value_name = "EFFORT", requires = "child_mode")]
         effort: Option<String>,
+    },
+    /// List this session's workers as JSON.
+    ///
+    /// Run from inside a nebula agent session that started workers with
+    /// `nebula spawn --child`. Prints one JSON array, oldest worker first, of
+    /// {"id","name","kind","status","status_changed_at","worktree","branch"};
+    /// an archived worker is left out, and no workers prints [].
+    #[command(after_help = CHILDREN_EXAMPLES)]
+    Children,
+    /// Show these workers of this session as JSON.
+    ///
+    /// Prints the same array as `nebula children`, for these ids in this
+    /// order. An id that is not this session's worker is refused, and
+    /// nothing is printed.
+    #[command(after_help = STATUS_EXAMPLES)]
+    Status {
+        /// Worker ids, as `nebula spawn --child` printed them.
+        #[arg(required = true, num_args = 1.., value_name = "ID")]
+        ids: Vec<String>,
+    },
+    /// Wait for workers of this session to settle.
+    ///
+    /// Polls once a second until every worker is settled (finished, needs
+    /// feedback, terminated or disconnected), or with --any until one is,
+    /// then prints the `nebula status` array for all of them. The exit code
+    /// says how it went: 12 on timeout; otherwise, over the settled workers,
+    /// 11 if one terminated or disconnected, else 10 if one needs feedback,
+    /// else 0. A refused id or a missing daemon is an ordinary error.
+    #[command(after_help = WAIT_EXAMPLES)]
+    Wait {
+        /// Worker ids, as `nebula spawn --child` printed them.
+        #[arg(required = true, num_args = 1.., value_name = "ID")]
+        ids: Vec<String>,
+        /// Return once any one of them is settled.
+        #[arg(long)]
+        any: bool,
+        /// Give up after this long: a number with s, m or h.
+        #[arg(long, value_name = "DURATION", default_value = "30m", value_parser = parse_duration)]
+        timeout: std::time::Duration,
     },
     /// Show files to the user inside this nebula.
     ///
@@ -363,6 +416,21 @@ Examples:
   nebula spawn --worktree fix-login --base main \"fix the login redirect\"
   nebula spawn --child --model sonnet \"summarize the open issues\"";
 
+const CHILDREN_EXAMPLES: &str = "\
+Examples:
+  nebula children";
+
+const STATUS_EXAMPLES: &str = "\
+Examples:
+  nebula status 01JB7Y3K2Q
+  nebula status 01JB7Y3K2Q 01JB7Y4M8R";
+
+const WAIT_EXAMPLES: &str = "\
+Examples:
+  nebula wait 01JB7Y3K2Q                       until it settles, up to 30m
+  nebula wait --any 01JB7Y3K2Q 01JB7Y4M8R      until the first one does
+  nebula wait --timeout 90s 01JB7Y3K2Q";
+
 const OPEN_EXAMPLES: &str = "\
 Examples:
   nebula open README.md                one tab
@@ -446,4 +514,28 @@ pub(crate) enum ConfigCommand {
     /// override it.
     #[command(after_help = "Example:\n  nebula config harnesses")]
     Harnesses,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[test]
+    fn durations_are_a_number_with_a_unit() {
+        for (input, parsed) in [
+            ("90s", Some(Duration::from_secs(90))),
+            ("5m", Some(Duration::from_secs(300))),
+            ("1h", Some(Duration::from_secs(3600))),
+            ("0s", Some(Duration::ZERO)),
+            ("30", None),
+            ("m", None),
+            ("1.5h", None),
+            ("-1s", None),
+            ("5d", None),
+            ("", None),
+        ] {
+            assert_eq!(parse_duration(input).ok(), parsed, "{input}");
+        }
+    }
 }
