@@ -7,7 +7,7 @@ use std::path::PathBuf;
 
 /// Bump on any breaking change to these enums. The daemon refuses mismatched
 /// clients; the client then offers a kill-and-restart of the old daemon.
-pub const PROTOCOL_VERSION: u32 = 45;
+pub const PROTOCOL_VERSION: u32 = 46;
 
 /// Max IPC frame size (length prefix sanity bound).
 pub const MAX_FRAME_LEN: u32 = 4 * 1024 * 1024;
@@ -245,6 +245,15 @@ pub enum ClientRequest {
         #[serde(default)]
         child: Option<ChildSpawn>,
     },
+    /// `nebula children` / `status` / `wait`: where the caller's workers
+    /// are. `ids` empty means every unarchived worker, oldest first;
+    /// otherwise those ids in that order, each of which must be the
+    /// caller's. Answered with `ChildStatuses`.
+    ChildStatus {
+        req_id: u64,
+        id: AgentId,
+        ids: Vec<AgentId>,
+    },
     /// `nebula open <file>…`, run by the agent from inside its own session:
     /// show these files to the user in every attached TUI's FILE TABS —
     /// one tab per file, the focused one previewed, Enter editing it.
@@ -417,6 +426,19 @@ pub struct ChildSpawn {
     pub effort: Option<String>,
 }
 
+/// One worker as its parent sees it: what `nebula children`, `status` and
+/// `wait` print, one JSON object each.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChildStatus {
+    pub id: AgentId,
+    pub name: String,
+    pub kind: AgentKind,
+    pub status: AgentStatus,
+    pub status_changed_at: i64,
+    pub worktree: PathBuf,
+    pub branch: String,
+}
+
 /// The worktree a worker is started in: a branch that must not exist yet,
 /// cut from `base` (resolved like `nebula worktree --base`) or, without
 /// one, from the base every new worktree gets.
@@ -505,6 +527,11 @@ pub enum ServerEvent {
         id: AgentId,
         worktree: PathBuf,
         branch: String,
+    },
+    /// Reply to `ChildStatus`.
+    ChildStatuses {
+        req_id: u64,
+        children: Vec<ChildStatus>,
     },
     /// Reply to `EnterWorktree`: the worktree the agent now belongs to, and
     /// what that meant for its process.
