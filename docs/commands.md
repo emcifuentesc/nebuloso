@@ -59,15 +59,25 @@ nebula spawn <task> [--kind <claude|codex|cursor|pi|muse|grok|opencode>]  # star
                           # one, in the same worktree, opening on <task> (agents run this when you
                           # ask for a new nebula session; --kind defaults to this session's harness;
                           # custom harnesses launch from the TUI picker and presets, not --kind)
-nebula spawn --child [--worktree <branch> [--base <ref>]] [--model <m>] [--effort <e>] <task>
+nebula spawn --child [--role <key>] [--worktree <branch> [--base <ref>]] [--model <m>] [--effort <e>] <task>
                           # start the new session as this one's worker: it records this session as
                           # its parent and prints one JSON line, {"id","worktree","branch"};
                           # --worktree (implies --child) cuts a new branch, which must not exist,
                           # and runs the worker there, --base resolved as for nebula worktree;
-                          # a worker cannot start workers, and a session may have 8 unarchived ones
+                          # --role (implies --child) takes the harness, model, effort and
+                          # unattended flag from that roster entry, --model and --effort winning;
+                          # refused with "--kind contradicts role <key>" for another --kind, and
+                          # "role <key> cannot implement" when its roles leave implement out;
+                          # a worker cannot start workers, and a session may have max_children
+                          # unarchived ones (8 unless the orchestration setting says otherwise)
+nebula roster             # the roster this session's workers start from, resolved for its project,
+                          # as one JSON object: {"roster":{"<key>":{"kind","model","effort",
+                          # "roles","unattended"},…},"max_children":N}, entries in the order the
+                          # settings list them; a setting that cannot be used is refused, naming
+                          # the entry ("roster entry <key>: unknown kind <kind>")
 nebula children           # this session's unarchived workers as one JSON array, oldest first, of
-                          # {"id","name","kind","status","status_changed_at","awaiting_turn",
-                          # "worktree","branch"};
+                          # {"id","name","kind","role","status","status_changed_at",
+                          # "awaiting_turn","worktree","branch"}; role is null without --role;
                           # [] when it has none
 nebula status <id>…       # the same array for these workers, in this order; an id that is not this
                           # session's worker is refused with "<id> is not your worker", nothing printed
@@ -89,7 +99,7 @@ nebula report [--pr <url>] <text…>
                           # --pr keeps the PR it opened. Refused from a session with no
                           # orchestrator ("report is for workers; this session has no orchestrator").
                           # A worker is told at spawn to report DONE: or BLOCKED: every turn
-nebula result <id>        # one JSON object for the worker: {"id","name","kind","status",
+nebula result <id>        # one JSON object for the worker: {"id","name","kind","role","status",
                           # "awaiting_turn","report","report_at","report_stale","worktree","branch",
                           # "base","head","diff_stat","untracked","uncommitted","pr_url"};
                           # report_stale once a send reached it after its last report; diff_stat

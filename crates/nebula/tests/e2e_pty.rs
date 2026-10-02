@@ -4462,6 +4462,86 @@ exit 0
     assert_eq!(runs(), "1");
 }
 
+/// `nebula roster` prints the configured roster in the order config.json
+/// writes it, and `nebula spawn --role` starts a worker from an entry,
+/// refusing one whose roles leave out implement.
+#[tokio::test]
+async fn roster_prints_the_configured_roster_and_spawn_role_uses_it() {
+    let env = TestEnv::new();
+    let repo = env.make_repo();
+    env.write_config(
+        r#"{"orchestration": {
+            "roster": {
+                "zeta": {"kind": "claude", "model": "opus", "effort": "high", "unattended": true},
+                "alpha": {"kind": "pi", "roles": ["review"]}
+            },
+            "max_children": 3,
+            "goal": {"max_iterations": 10}
+        }}"#,
+    );
+    let mut daemon = env.spawn_daemon_with_agent_cmd("/bin/cat");
+    let mut c = connect(&env.sock()).await;
+    handshake(&mut c).await;
+    let main_worktree = add_project_get_main_worktree(&mut c, &repo).await;
+    write_frame(
+        &mut c,
+        &ClientRequest::CreateAgent {
+            req_id: 2,
+            worktree: main_worktree.id.clone(),
+            name: "lead".into(),
+            kind: AgentKind::Claude,
+            custom_harness: None,
+            model: None,
+            effort: None,
+            auto_title: false,
+            cloud_prompt: None,
+            starting_prompt: None,
+            issue_url: None,
+        },
+    )
+    .await
+    .unwrap();
+    let events = read_events_until(&mut c, EVENT_TIMEOUT, |evs| find_ack(evs, 2).is_some()).await;
+    let Some(ServerEvent::Ack {
+        created: Some(EntityId::Agent(lead)),
+        ..
+    }) = find_ack(&events, 2)
+    else {
+        panic!("CreateAgent failed: {events:#?}");
+    };
+    let lead = lead.clone();
+
+    let out = agent_cli(&env, &lead, &["roster"]);
+    assert!(out.status.success(), "roster failed: {out:?}");
+    assert_eq!(
+        String::from_utf8(out.stdout).unwrap(),
+        concat!(
+            r#"{"roster":{"zeta":{"kind":"claude","model":"opus","effort":"high","#,
+            r#""roles":["implement","review"],"unattended":true},"#,
+            r#""alpha":{"kind":"pi","model":null,"effort":null,"roles":["review"],"#,
+            r#""unattended":false}},"max_children":3}"#,
+            "\n"
+        )
+    );
+
+    let out = agent_cli(&env, &lead, &["spawn", "--role", "zeta", "write the tests"]);
+    assert!(out.status.success(), "role spawn failed: {out:?}");
+    let out = agent_cli(&env, &lead, &["children"]);
+    let children: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(children[0]["role"], "zeta", "{children}");
+    assert_eq!(children[0]["kind"], "claude");
+
+    let out = agent_cli(&env, &lead, &["spawn", "--role", "alpha", "fix it"]);
+    assert!(!out.status.success());
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("role alpha cannot implement"),
+        "{out:?}"
+    );
+
+    write_frame(&mut c, &ClientRequest::Shutdown).await.unwrap();
+    wait_for_exit(&mut daemon);
+}
+
 /// `nebula spawn --worktree` from inside a session: the worker gets its own
 /// checkout on disk, its row names the caller as its parent, stdout is the
 /// one JSON line an orchestrator parses, and the worker itself is refused

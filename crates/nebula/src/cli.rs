@@ -164,9 +164,10 @@ pub(crate) enum Command {
     /// With --child or --worktree the new session is this one's worker: it
     /// records this session as its parent, and the command prints one JSON
     /// line, {"id":…,"worktree":…,"branch":…}, instead of prose. A worker
-    /// cannot start workers, and a session may have 8 unarchived ones.
+    /// cannot start workers, and a session may have the project's
+    /// `max_children` unarchived ones (8 by default; see `nebula roster`).
     #[command(after_help = SPAWN_EXAMPLES)]
-    #[command(group(clap::ArgGroup::new("child_mode").args(["child", "worktree"]).multiple(true)))]
+    #[command(group(clap::ArgGroup::new("child_mode").args(["child", "worktree", "role"]).multiple(true)))]
     Spawn {
         /// The task the new session starts on; multiple words need no quotes.
         #[arg(required = true, num_args = 1..)]
@@ -180,6 +181,12 @@ pub(crate) enum Command {
         /// Start the new session as this one's worker.
         #[arg(long)]
         child: bool,
+        /// Start the worker from this `nebula roster` entry (implies
+        /// --child): its harness, model, effort and unattended flag. --model
+        /// and --effort still win; a --kind other than the entry's is
+        /// refused, and so is an entry whose roles leave out implement.
+        #[arg(long, value_name = "KEY")]
+        role: Option<String>,
         /// Start the worker in a new worktree on this branch (implies
         /// --child). The branch must not exist yet.
         #[arg(long, value_name = "BRANCH")]
@@ -189,10 +196,11 @@ pub(crate) enum Command {
         /// else origin's default branch, fetched).
         #[arg(long, value_name = "REF", requires = "worktree")]
         base: Option<String>,
-        /// Model for the worker's CLI, instead of this session's.
+        /// Model for the worker's CLI, instead of this session's or its role's.
         #[arg(long, value_name = "MODEL", requires = "child_mode")]
         model: Option<String>,
-        /// Reasoning effort for the worker's CLI, instead of this session's.
+        /// Reasoning effort for the worker's CLI, instead of this session's or
+        /// its role's.
         #[arg(long, value_name = "EFFORT", requires = "child_mode")]
         effort: Option<String>,
     },
@@ -200,8 +208,9 @@ pub(crate) enum Command {
     ///
     /// Run from inside a nebula agent session that started workers with
     /// `nebula spawn --child`. Prints one JSON array, oldest worker first, of
-    /// {"id","name","kind","status","status_changed_at","awaiting_turn",
-    /// "worktree","branch"};
+    /// {"id","name","kind","role","status","status_changed_at",
+    /// "awaiting_turn","worktree","branch"}; role is the `--role` it was
+    /// started with, or null;
     /// an archived worker is left out, and no workers prints [].
     #[command(after_help = CHILDREN_EXAMPLES)]
     Children,
@@ -270,9 +279,19 @@ pub(crate) enum Command {
         #[arg(required = true, num_args = 1..)]
         text: Vec<String>,
     },
+    /// Print the roster this session's workers can be started from, as JSON.
+    ///
+    /// Run from inside a nebula agent session. Prints one JSON object,
+    /// {"roster":{"<key>":{"kind","model","effort","roles","unattended"},…},
+    /// "max_children":N}, resolved for this session's project from the
+    /// `orchestration` setting, entries in the order the settings list them.
+    /// Without a configured roster it lists every installed hooked harness.
+    /// A setting that cannot be used is refused with the entry it names.
+    #[command(after_help = ROSTER_EXAMPLES)]
+    Roster,
     /// Show what a worker of this session reported and left in its checkout.
     ///
-    /// Prints one JSON object of {"id","name","kind","status",
+    /// Prints one JSON object of {"id","name","kind","role","status",
     /// "awaiting_turn","report","report_at","report_stale","worktree",
     /// "branch","base","head","diff_stat","untracked","uncommitted",
     /// "pr_url"}. report is null and report_at 0 when the worker never
@@ -465,7 +484,13 @@ Examples:
   nebula spawn \"port the tests to the new fixture\"
   nebula spawn --kind codex \"review the diff on this branch\"
   nebula spawn --worktree fix-login --base main \"fix the login redirect\"
-  nebula spawn --child --model sonnet \"summarize the open issues\"";
+  nebula spawn --child --model sonnet \"summarize the open issues\"
+  nebula spawn --role codex --worktree fix-parser \"fix the parser\"";
+
+const ROSTER_EXAMPLES: &str = "\
+Examples:
+  nebula roster
+  nebula roster | jq -r '.roster | keys_unsorted[]'";
 
 const CHILDREN_EXAMPLES: &str = "\
 Examples:
