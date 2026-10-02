@@ -308,6 +308,7 @@ impl Daemon {
             unattended: false,
             purpose: None,
             orchestrator: false,
+            goal: None,
         })
         .await
     }

@@ -5627,6 +5627,7 @@ mod tests {
                 unattended: false,
                 purpose: None,
                 orchestrator: false,
+                goal: None,
             })
             .collect();
         app
@@ -5922,6 +5923,7 @@ mod tests {
             unattended: false,
             purpose: None,
             orchestrator: false,
+            goal: None,
         });
         app.tree.agents.push(Agent {
             id: AgentId("a2".into()),
@@ -6161,6 +6163,7 @@ mod tests {
                 unattended: false,
                 purpose: None,
                 orchestrator: false,
+                goal: None,
             });
         }
 

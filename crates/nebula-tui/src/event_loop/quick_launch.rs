@@ -391,6 +391,7 @@ mod tests {
                     unattended: false,
                     purpose: None,
                     orchestrator: false,
+                    goal: None,
                 }),
             },
         );

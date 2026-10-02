@@ -517,6 +517,7 @@ mod tests {
             unattended: false,
             purpose: None,
             orchestrator: false,
+            goal: None,
         };
         store
             .insert_agent_with_auto_title(&agent("pending"), true)

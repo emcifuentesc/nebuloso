@@ -250,6 +250,7 @@ impl Daemon {
             unattended: role.is_some_and(|(_, entry)| entry.unattended),
             purpose: child.map(ChildSpawn::purpose),
             orchestrator: false,
+            goal: None,
         })
     }
 
@@ -662,6 +663,7 @@ mod tests {
             unattended: false,
             purpose: None,
             orchestrator: false,
+            goal: None,
         }
     }
 

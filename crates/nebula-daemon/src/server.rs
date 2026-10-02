@@ -321,6 +321,7 @@ async fn handle_client(daemon: Arc<Daemon>, stream: UnixStream) -> Result<()> {
                     starting_prompt,
                     issue_url,
                     orchestrator,
+                    goal,
                 } => {
                     // Logged by mode only — never the task, prompt text or
                     // issue URL.
@@ -348,6 +349,7 @@ async fn handle_client(daemon: Arc<Daemon>, stream: UnixStream) -> Result<()> {
                             unattended: false,
                             purpose: None,
                             orchestrator,
+                            goal,
                         })
                         .await;
                     if let Some(launch_mode) = launch_mode {

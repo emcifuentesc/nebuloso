@@ -222,6 +222,7 @@ pub(super) fn stage_agent(
         unattended: false,
         purpose: None,
         orchestrator: false,
+        goal: None,
     });
     if let Some(i) = project.and_then(|id| {
         app.project_rows()
@@ -695,6 +696,7 @@ mod tests {
             unattended: false,
             purpose: None,
             orchestrator: false,
+            goal: None,
         }
     }
 

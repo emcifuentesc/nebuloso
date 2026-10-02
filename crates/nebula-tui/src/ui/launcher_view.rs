@@ -3725,6 +3725,7 @@ mod tests {
                 unattended: false,
                 purpose: None,
                 orchestrator: false,
+                goal: None,
             })
             .collect();
         app
@@ -4920,6 +4921,7 @@ mod tests {
                     unattended: false,
                     purpose: None,
                     orchestrator: false,
+                    goal: None,
                 },
                 project: "nebula".into(),
                 branch: branch.into(),
@@ -5160,6 +5162,7 @@ mod tests {
             unattended: false,
             purpose: None,
             orchestrator: false,
+            goal: None,
         };
         let th = Theme::by_name("amber");
         let mut app = App::new();
@@ -5273,6 +5276,7 @@ mod tests {
                 unattended: false,
                 purpose: None,
                 orchestrator: false,
+                goal: None,
             },
             project: "nebula".into(),
             branch: "feat-x".into(),
@@ -5333,6 +5337,7 @@ mod tests {
                 unattended: false,
                 purpose: None,
                 orchestrator: false,
+                goal: None,
             },
             project: "nebula".into(),
             branch: "feat-x".into(),
@@ -5488,6 +5493,7 @@ mod tests {
                     unattended: false,
                     purpose: None,
                     orchestrator: false,
+                    goal: None,
                 },
                 project: "nebula".into(),
                 branch: "main".into(),

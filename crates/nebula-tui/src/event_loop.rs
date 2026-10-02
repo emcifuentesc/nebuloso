@@ -8455,6 +8455,7 @@ fn create_agent(app: &mut App, draft: AgentLaunchDraft, out: &mut Vec<ClientRequ
             starting_prompt,
             issue_url,
             orchestrator,
+            goal: None,
         },
     });
     // The create consumes (or, off-spec, discards) the worktree's warm
@@ -10966,6 +10967,7 @@ mod tests {
                     unattended: false,
                     purpose: None,
                     orchestrator: false,
+                    goal: None,
                 }),
             },
         );
@@ -11000,6 +11002,7 @@ mod tests {
                     unattended: false,
                     purpose: None,
                     orchestrator: false,
+                    goal: None,
                 }),
             },
         );
@@ -11762,6 +11765,7 @@ mod tests {
                     unattended: false,
                     purpose: None,
                     orchestrator: false,
+                    goal: None,
                 }),
             },
         );
@@ -15757,6 +15761,7 @@ diff --git a/src/c.rs b/src/c.rs
                     unattended: false,
                     purpose: None,
                     orchestrator: false,
+                    goal: None,
                 }),
             }
         };
@@ -15817,6 +15822,7 @@ diff --git a/src/c.rs b/src/c.rs
                 unattended: false,
                 purpose: None,
                 orchestrator: false,
+                goal: None,
             }),
         };
         // A long-running turn outranks a more recent finish, because a
@@ -15904,6 +15910,7 @@ diff --git a/src/c.rs b/src/c.rs
                 unattended: false,
                 purpose: None,
                 orchestrator: false,
+                goal: None,
             }),
         };
         hse(
@@ -15969,6 +15976,7 @@ diff --git a/src/c.rs b/src/c.rs
                     unattended: false,
                     purpose: None,
                     orchestrator: false,
+                    goal: None,
                 }),
             },
         );
@@ -16043,6 +16051,7 @@ diff --git a/src/c.rs b/src/c.rs
                     unattended: false,
                     purpose: None,
                     orchestrator: false,
+                    goal: None,
                 }),
             },
         );
@@ -18302,6 +18311,7 @@ diff --git a/src/c.rs b/src/c.rs
                     unattended: false,
                     purpose: None,
                     orchestrator: false,
+                    goal: None,
                 }),
             },
         );
@@ -18832,6 +18842,7 @@ diff --git a/src/c.rs b/src/c.rs
             unattended: false,
             purpose: None,
             orchestrator: false,
+            goal: None,
         })
     }
 
@@ -20325,6 +20336,7 @@ diff --git a/src/c.rs b/src/c.rs
             unattended: false,
             purpose: None,
             orchestrator: false,
+            goal: None,
         };
 
         // a1 is the selected session; its upsert lands under w2.
@@ -20521,6 +20533,7 @@ diff --git a/src/c.rs b/src/c.rs
             unattended: false,
             purpose: None,
             orchestrator: false,
+            goal: None,
         })
     }
 
@@ -22261,6 +22274,7 @@ diff --git a/src/c.rs b/src/c.rs
                     unattended: false,
                     purpose: None,
                     orchestrator: false,
+                    goal: None,
                 }),
             },
         );
@@ -22291,6 +22305,7 @@ diff --git a/src/c.rs b/src/c.rs
                     unattended: false,
                     purpose: None,
                     orchestrator: false,
+                    goal: None,
                 }),
             },
         );
@@ -22609,6 +22624,7 @@ diff --git a/src/c.rs b/src/c.rs
             unattended: false,
             purpose: None,
             orchestrator: false,
+            goal: None,
         };
         for a in [
             agent("ask", "w2", AgentStatus::NeedsFeedback, false),
@@ -23073,6 +23089,7 @@ diff --git a/src/c.rs b/src/c.rs
                     unattended: false,
                     purpose: None,
                     orchestrator: false,
+                    goal: None,
                 }),
             },
         );
@@ -25293,6 +25310,7 @@ diff --git a/src/c.rs b/src/c.rs
                         unattended: false,
                         purpose: None,
                         orchestrator: false,
+                        goal: None,
                     }),
                 },
             );
@@ -25372,6 +25390,7 @@ diff --git a/src/c.rs b/src/c.rs
             unattended: false,
             purpose: None,
             orchestrator: false,
+            goal: None,
         })
     }
 
@@ -26000,6 +26019,7 @@ diff --git a/src/c.rs b/src/c.rs
                     unattended: false,
                     purpose: None,
                     orchestrator: false,
+                    goal: None,
                 }),
             },
         );
@@ -26072,6 +26092,7 @@ diff --git a/src/c.rs b/src/c.rs
                     unattended: false,
                     purpose: None,
                     orchestrator: false,
+                    goal: None,
                 }),
             },
         );
@@ -26887,6 +26908,7 @@ diff --git a/src/c.rs b/src/c.rs
                         unattended: false,
                         purpose: None,
                         orchestrator: false,
+                        goal: None,
                     }),
                 },
             );
@@ -28322,6 +28344,7 @@ diff --git a/src/c.rs b/src/c.rs
                         unattended: false,
                         purpose: None,
                         orchestrator: false,
+                        goal: None,
                     }),
                 },
             );
@@ -30250,6 +30273,7 @@ diff --git a/src/c.rs b/src/c.rs
                     unattended: false,
                     purpose: None,
                     orchestrator: false,
+                    goal: None,
                 }),
             },
         );

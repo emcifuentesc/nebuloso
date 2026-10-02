@@ -231,6 +231,7 @@ mod tests {
                 unattended: false,
                 purpose: None,
                 orchestrator: false,
+                goal: None,
             })
             .unwrap();
         let daemon = Daemon::new(

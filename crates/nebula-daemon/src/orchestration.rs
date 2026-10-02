@@ -45,13 +45,41 @@ and run rules 5 and 6 on each worker as it settles. Each task gets its own PR. S
 `nebula archive` a finished implementer and its reviewer before starting the next queued task. \
 Finish with one line per task: PR URL, rounds used, final verdict, unresolved issues.";
 
-/// What an orchestrator's system prompt carries: the guidance, then the
-/// roster resolved for its project when it spawned, fenced like a worker's
-/// guidance.
-pub(crate) fn orchestrator_guidance(orchestration: &Orchestration) -> String {
-    let roster = serde_json::to_string(orchestration).expect("an orchestration serializes");
+/// `raw` trimmed, as a goal's condition or its `done` / `unachievable`
+/// text: refused empty, with a NUL, or longer than `max` bytes.
+pub(crate) fn goal_text(raw: &str, what: &str, max: usize) -> anyhow::Result<String> {
+    let text = raw.trim();
+    if text.is_empty() {
+        anyhow::bail!("{what} is empty");
+    }
+    if text.contains('\0') {
+        anyhow::bail!("{what} cannot contain NUL bytes");
+    }
+    if text.len() > max {
+        anyhow::bail!("{what} is too long (max {} KiB)", max / 1024);
+    }
+    Ok(text.to_string())
+}
+
+/// The paragraph an orchestrator with an open GOAL gets after the rules.
+fn goal_guidance(condition: &str) -> String {
     format!(
-        "<nebula-orchestrator-guidance>\n{ORCHESTRATOR_GUIDANCE}\n\nRoster:\n{roster}\n\
+        "Goal: {condition}\nKeep orchestrating until it holds; when it holds run \
+         `nebula goal done \"<evidence>\"`; if it cannot be met run \
+         `nebula goal unachievable \"<why>\"`."
+    )
+}
+
+/// What an orchestrator's system prompt carries: the guidance, its open
+/// GOAL's paragraph when it has one, then the roster resolved for its
+/// project when it spawned, fenced like a worker's guidance.
+pub(crate) fn orchestrator_guidance(orchestration: &Orchestration, goal: Option<&str>) -> String {
+    let roster = serde_json::to_string(orchestration).expect("an orchestration serializes");
+    let goal = goal
+        .map(|condition| format!("\n\n{}", goal_guidance(condition)))
+        .unwrap_or_default();
+    format!(
+        "<nebula-orchestrator-guidance>\n{ORCHESTRATOR_GUIDANCE}{goal}\n\nRoster:\n{roster}\n\
          </nebula-orchestrator-guidance>"
     )
 }
@@ -94,11 +122,27 @@ mod tests {
 
     #[test]
     fn the_roster_rides_after_the_guidance_as_json() {
-        let text = orchestrator_guidance(&Orchestration::default());
+        let text = orchestrator_guidance(&Orchestration::default(), None);
         assert!(text.starts_with("<nebula-orchestrator-guidance>\n[nebula] You are"));
         assert!(text.ends_with(
             "\n\nRoster:\n{\"roster\":{},\"max_children\":8,\"cross_review\":{\"max_rounds\":3},\"goal\":{\"max_iterations\":10}}\n\
              </nebula-orchestrator-guidance>"
         ));
+    }
+
+    #[test]
+    fn the_goal_paragraph_rides_only_with_a_goal() {
+        let plain = orchestrator_guidance(&Orchestration::default(), None);
+        assert!(!plain.contains("Goal:"));
+        let with = orchestrator_guidance(&Orchestration::default(), Some("tests pass"));
+        assert!(with.contains(&format!(
+            "{ORCHESTRATOR_GUIDANCE}\n\nGoal: tests pass\nKeep orchestrating until it holds; \
+             when it holds run `nebula goal done \"<evidence>\"`; if it cannot be met run \
+             `nebula goal unachievable \"<why>\"`.\n\nRoster:\n"
+        )));
+        assert_eq!(
+            with.replace(&format!("\n\n{}", goal_guidance("tests pass")), ""),
+            plain
+        );
     }
 }

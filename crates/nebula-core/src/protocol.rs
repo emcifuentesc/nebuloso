@@ -8,7 +8,7 @@ use std::path::PathBuf;
 
 /// Bump on any breaking change to these enums. The daemon refuses mismatched
 /// clients; the client then offers a kill-and-restart of the old daemon.
-pub const PROTOCOL_VERSION: u32 = 51;
+pub const PROTOCOL_VERSION: u32 = 52;
 
 /// Max IPC frame size (length prefix sanity bound).
 pub const MAX_FRAME_LEN: u32 = 4 * 1024 * 1024;
@@ -133,6 +133,10 @@ pub enum ClientRequest {
         /// harness without a system-prompt flag.
         #[serde(default)]
         orchestrator: bool,
+        /// An orchestrator's GOAL: the condition its Claude Stops are sent
+        /// back to work until. Refused without `orchestrator`.
+        #[serde(default)]
+        goal: Option<String>,
     },
     /// Create a local AGENT of any kind from an OPEN PRS row — a PR
     /// SESSION. It never runs in the ROOT WORKTREE: the daemon finds the
