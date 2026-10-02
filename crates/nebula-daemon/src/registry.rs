@@ -332,6 +332,35 @@ impl Daemon {
         self.sessions.lock().unwrap().get(sref).cloned()
     }
 
+    /// `text` down `session` as `agent`'s next turn
+    /// ([`nebula_core::paste::turn_writes`]), and the agent marked as
+    /// awaiting it — under the status machines' lock, so the hook that
+    /// answers the turn is handled after the mark, and only once both
+    /// writes landed.
+    pub(crate) fn write_turn(&self, agent: &Agent, session: &PtySession, text: &str) -> Result<()> {
+        let mut machines = self.status_machines.lock().unwrap();
+        for data in nebula_core::paste::turn_writes(text) {
+            session.write_input(&data)?;
+        }
+        machines
+            .entry(agent.id.clone())
+            .or_insert_with(|| AgentStatusMachine::new(agent.status, agent.session_id.clone()))
+            .await_turn();
+        Ok(())
+    }
+
+    /// Whether a `nebula send` to `id` is still waiting on the turn it
+    /// starts. A PTY gone by any road, a kill included, waits on nothing.
+    pub(crate) fn awaiting_turn(&self, id: &AgentId) -> bool {
+        self.is_alive(&SessionRef::Agent(id.clone()))
+            && self
+                .status_machines
+                .lock()
+                .unwrap()
+                .get(id)
+                .is_some_and(AgentStatusMachine::awaiting_turn)
+    }
+
     pub fn is_alive(&self, sref: &SessionRef) -> bool {
         self.sessions.lock().unwrap().contains_key(sref)
     }
@@ -2742,7 +2771,7 @@ impl Daemon {
         Ok(session)
     }
 
-    fn install_session(self: &Arc<Self>, session: Arc<PtySession>) {
+    pub(crate) fn install_session(self: &Arc<Self>, session: Arc<PtySession>) {
         self.touch_session(&session.sref);
         self.sessions
             .lock()

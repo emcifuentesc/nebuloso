@@ -12,7 +12,8 @@ use std::sync::Arc;
 
 use anyhow::{bail, Context, Result};
 use nebula_core::{
-    AgentId, AgentKind, ChildSpawn, ChildStatus, EntityId, SpawnWorktree, Worktree, WorktreeId,
+    Agent, AgentId, AgentKind, AgentStatus, ChildSpawn, ChildStatus, EntityId, SessionRef,
+    SpawnWorktree, Worktree, WorktreeId,
 };
 
 use crate::git;
@@ -21,6 +22,10 @@ use crate::registry::{validate_starting_prompt, CreateAgentSpec, Daemon};
 /// How many unarchived workers one session may have at once. An archived
 /// worker is done with, so it frees its slot.
 pub(crate) const MAX_CHILDREN: usize = 8;
+
+/// The longest message `nebula send` writes down a worker's PTY, in UTF-8
+/// bytes.
+pub(crate) const MAX_SEND_BYTES: usize = 32 * 1024;
 
 /// What nebula appends to Claude's system prompt so "start a new nebula
 /// session that …" becomes one `nebula spawn` call instead of the model
@@ -197,10 +202,7 @@ impl Daemon {
             self.store.child_agents(caller)?
         } else {
             ids.iter()
-                .map(|id| match self.store.get_agent(id)? {
-                    Some(agent) if agent.parent_agent_id.as_ref() == Some(caller) => Ok(agent),
-                    _ => bail!("{id} is not your worker"),
-                })
+                .map(|id| self.worker_of(caller, id))
                 .collect::<Result<Vec<_>>>()?
         };
         agents
@@ -211,6 +213,7 @@ impl Daemon {
                     .get_worktree(&agent.worktree_id)?
                     .context("worktree not found")?;
                 Ok(ChildStatus {
+                    awaiting_turn: self.awaiting_turn(&agent.id),
                     id: agent.id,
                     name: agent.name,
                     kind: agent.kind,
@@ -221,6 +224,41 @@ impl Daemon {
                 })
             })
             .collect()
+    }
+
+    /// `nebula send <id> <text>`: `text` as the next turn of the caller's
+    /// worker `child`. Refused while that worker is mid-turn or another of
+    /// the caller's workers is working in the same worktree — one agent
+    /// edits a checkout at a time.
+    pub fn send_to_child(&self, caller: &AgentId, child: &AgentId, text: &str) -> Result<()> {
+        let agent = self.worker_of(caller, child)?;
+        if text.len() > MAX_SEND_BYTES {
+            bail!("message too long");
+        }
+        let Some(session) = self.session(&SessionRef::Agent(child.clone())) else {
+            bail!("{child} is not running");
+        };
+        if agent.status == AgentStatus::Running {
+            bail!("{child} is mid-turn; wait first");
+        }
+        if let Some(other) = self.store.child_agents(caller)?.into_iter().find(|other| {
+            &other.id != child
+                && other.worktree_id == agent.worktree_id
+                && other.status == AgentStatus::Running
+        }) {
+            bail!("{} is working in this worktree; wait first", other.id);
+        }
+        self.write_turn(&agent, &session, text)
+    }
+
+    /// `id`'s row, when it is `caller`'s worker. Anything else — another
+    /// session's agent, no agent at all — is the one refusal, so it says
+    /// nothing about any agent.
+    fn worker_of(&self, caller: &AgentId, id: &AgentId) -> Result<Agent> {
+        match self.store.get_agent(id)? {
+            Some(agent) if agent.parent_agent_id.as_ref() == Some(caller) => Ok(agent),
+            _ => bail!("{id} is not your worker"),
+        }
     }
 }
 
@@ -494,6 +532,141 @@ mod tests {
             .child_statuses(&AgentId("lead".into()), &[])
             .unwrap()
             .is_empty());
+    }
+
+    fn lead(daemon: &Daemon) -> AgentId {
+        daemon
+            .store
+            .insert_agent(&agent("lead", "root", AgentKind::Claude, None))
+            .unwrap();
+        AgentId("lead".into())
+    }
+
+    fn set_status(daemon: &Daemon, id: &str, status: AgentStatus) {
+        daemon
+            .store
+            .set_agent_status(&AgentId(id.into()), status)
+            .unwrap();
+    }
+
+    /// A PTY for `id` running `cat`, as a spawned worker's CLI would be.
+    fn go_live(daemon: &Arc<Daemon>, id: &str) {
+        let session = crate::pty::PtySession::spawn(
+            SessionRef::Agent(AgentId(id.into())),
+            crate::pty::SpawnSpec {
+                program: "cat".into(),
+                args: vec![],
+                cwd: std::env::temp_dir(),
+                env: vec![],
+                scrub_env: &[],
+                cols: 80,
+                rows: 24,
+            },
+        )
+        .unwrap();
+        daemon.install_session(session);
+    }
+
+    fn send(daemon: &Daemon, child: &str, text: &str) -> Result<()> {
+        daemon.send_to_child(&AgentId("lead".into()), &AgentId(child.into()), text)
+    }
+
+    fn awaiting(daemon: &Daemon, child: &str) -> bool {
+        daemon
+            .child_statuses(&AgentId("lead".into()), &[AgentId(child.into())])
+            .unwrap()[0]
+            .awaiting_turn
+    }
+
+    #[test]
+    fn send_refuses_an_id_that_is_not_the_callers_worker() {
+        let daemon = daemon();
+        lead(&daemon);
+        daemon
+            .store
+            .insert_agent(&agent("other", "root", AgentKind::Claude, None))
+            .unwrap();
+        worker_of(&daemon, "theirs", "other", "feat");
+        for stranger in ["theirs", "lead", "missing"] {
+            let err = send(&daemon, stranger, "hi").expect_err("not a worker");
+            assert_eq!(err.to_string(), format!("{stranger} is not your worker"));
+        }
+    }
+
+    #[test]
+    fn send_refuses_a_message_over_32_kib_before_anything_else() {
+        let daemon = daemon();
+        lead(&daemon);
+        worker_of(&daemon, "w", "lead", "feat");
+        let err = send(&daemon, "w", &"é".repeat(MAX_SEND_BYTES / 2 + 1)).unwrap_err();
+        assert_eq!(err.to_string(), "message too long");
+    }
+
+    #[test]
+    fn send_refuses_a_worker_with_no_pty() {
+        let daemon = daemon();
+        lead(&daemon);
+        worker_of(&daemon, "w", "lead", "feat");
+        set_status(&daemon, "w", AgentStatus::Finished);
+        let err = send(&daemon, "w", "hi").unwrap_err();
+        assert_eq!(err.to_string(), "w is not running");
+    }
+
+    #[tokio::test]
+    async fn send_refuses_a_worker_mid_turn() {
+        let daemon = daemon();
+        lead(&daemon);
+        worker_of(&daemon, "w", "lead", "feat");
+        go_live(&daemon, "w");
+        let err = send(&daemon, "w", "hi").unwrap_err();
+        assert_eq!(err.to_string(), "w is mid-turn; wait first");
+        assert!(!awaiting(&daemon, "w"));
+    }
+
+    #[tokio::test]
+    async fn send_refuses_while_another_worker_works_in_the_same_worktree() {
+        let daemon = daemon();
+        lead(&daemon);
+        worker_of(&daemon, "w", "lead", "feat");
+        worker_of(&daemon, "busy", "lead", "feat");
+        worker_of(&daemon, "elsewhere", "lead", "root");
+        set_status(&daemon, "w", AgentStatus::Finished);
+        go_live(&daemon, "w");
+        let err = send(&daemon, "w", "hi").unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "busy is working in this worktree; wait first"
+        );
+
+        set_status(&daemon, "busy", AgentStatus::Finished);
+        send(&daemon, "w", "hi").expect("a worker in another worktree is no obstacle");
+    }
+
+    #[tokio::test]
+    async fn a_send_awaits_the_turn_until_a_hook_or_the_pty_ending_answers_it() {
+        let daemon = daemon();
+        lead(&daemon);
+        worker_of(&daemon, "w", "lead", "feat");
+        set_status(&daemon, "w", AgentStatus::Finished);
+        go_live(&daemon, "w");
+        assert!(!awaiting(&daemon, "w"));
+
+        send(&daemon, "w", "next").unwrap();
+        assert!(awaiting(&daemon, "w"));
+        let w = AgentId("w".into());
+        daemon.apply_hook_event(&w, crate::status::HookEvent::Stop, None);
+        assert_eq!(
+            daemon.store.get_agent(&w).unwrap().unwrap().status,
+            AgentStatus::Finished
+        );
+        assert!(
+            !awaiting(&daemon, "w"),
+            "finished → finished still answers it"
+        );
+
+        send(&daemon, "w", "again").unwrap();
+        daemon.kill_session(&SessionRef::Agent(w.clone()));
+        assert!(!awaiting(&daemon, "w"), "no PTY, nothing to wait on");
     }
 
     #[test]
