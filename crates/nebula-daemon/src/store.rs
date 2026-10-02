@@ -328,6 +328,15 @@ const MIGRATIONS: &[&str] = &[
     DROP TABLE temp.worktree_home;
     DROP TABLE temp.worktree_merge;
     ",
+    // 29: who started a session (`nebula spawn --child`) and what a spawned
+    // worktree was cut from. Nullable: every existing AGENT stays a
+    // top-level session and every existing WORKTREE has no recorded base.
+    // SET NULL, not CASCADE: deleting an orchestrator orphans its workers,
+    // it never deletes them.
+    "
+    ALTER TABLE agents ADD COLUMN parent_agent_id TEXT REFERENCES agents(id) ON DELETE SET NULL;
+    ALTER TABLE worktrees ADD COLUMN base_ref TEXT;
+    ",
 ];
 
 pub struct Store {
@@ -442,8 +451,8 @@ impl Store {
 
     pub fn insert_worktree(&self, w: &Worktree) -> Result<()> {
         self.conn.lock().unwrap().execute(
-            "INSERT INTO worktrees (id, project_id, path, branch, is_main, sort_order, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            "INSERT INTO worktrees (id, project_id, path, branch, is_main, sort_order, created_at, base_ref)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             params![
                 w.id.as_str(),
                 w.project_id.as_str(),
@@ -451,7 +460,8 @@ impl Store {
                 w.branch,
                 w.is_main as i64,
                 w.sort_order,
-                now_ms()
+                now_ms(),
+                w.base_ref
             ],
         )?;
         Ok(())
@@ -505,8 +515,8 @@ impl Store {
         issue_url: Option<&str>,
     ) -> Result<()> {
         self.conn.lock().unwrap().execute(
-            "INSERT INTO agents (id, worktree_id, name, status, archived, archived_at, kind, claude_session_id, sort_order, created_at, status_changed_at, model, effort, auto_title_pending, unseen, cloud_session_id, pr_url, issue_url, custom_harness)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)",
+            "INSERT INTO agents (id, worktree_id, name, status, archived, archived_at, kind, claude_session_id, sort_order, created_at, status_changed_at, model, effort, auto_title_pending, unseen, cloud_session_id, pr_url, issue_url, custom_harness, parent_agent_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)",
             params![
                 a.id.as_str(),
                 a.worktree_id.as_str(),
@@ -527,6 +537,7 @@ impl Store {
                 pr_url,
                 issue_url,
                 a.custom_harness,
+                a.parent_agent_id.as_ref().map(AgentId::as_str),
             ],
         )?;
         Ok(())
@@ -1028,11 +1039,11 @@ impl Store {
 
 // Column orders the `row_to_*` mappers below read.
 const PROJECT_COLUMNS: &str = "id, name, repo_path, sort_order";
-const WORKTREE_COLUMNS: &str = "id, project_id, path, branch, is_main, sort_order";
+const WORKTREE_COLUMNS: &str = "id, project_id, path, branch, is_main, sort_order, base_ref";
 const AGENT_COLUMNS: &str = "id, worktree_id, name, status, archived, kind, \
                              claude_session_id, sort_order, status_changed_at, model, effort, \
                              archived_at, unseen, cloud_session_id, recent_prompts, custom_harness, \
-                             issue_url";
+                             issue_url, parent_agent_id";
 const TERMINAL_COLUMNS: &str = "id, worktree_id, name, sort_order, run_command";
 const LINK_COLUMNS: &str = "id, worktree_id, url, sort_order";
 
@@ -1053,6 +1064,7 @@ fn row_to_worktree(r: &rusqlite::Row) -> rusqlite::Result<Worktree> {
         branch: r.get(3)?,
         is_main: r.get::<_, i64>(4)? != 0,
         sort_order: r.get(5)?,
+        base_ref: r.get(6)?,
     })
 }
 
@@ -1078,6 +1090,7 @@ fn row_to_agent(r: &rusqlite::Row) -> rusqlite::Result<Agent> {
         issue_url: r.get(16)?,
         recent_prompts: parse_prompts(r.get::<_, Option<String>>(14)?.as_deref()),
         custom_harness: r.get(15)?,
+        parent_agent_id: r.get::<_, Option<String>>(17)?.map(AgentId),
     })
 }
 
@@ -1154,6 +1167,7 @@ mod tests {
             branch: "main".into(),
             is_main: true,
             sort_order: 0,
+            base_ref: None,
         };
         store.insert_worktree(&worktree).unwrap();
         let agent = Agent {
@@ -1175,6 +1189,7 @@ mod tests {
             alive: false,
             issue_url: None,
             recent_prompts: Vec::new(),
+            parent_agent_id: None,
         };
         let pr_url = "https://github.com/AgentSystemLabs/nebula/pull/42";
         store
@@ -1199,6 +1214,7 @@ mod tests {
             alive: false,
             issue_url: None,
             recent_prompts: Vec::new(),
+            parent_agent_id: None,
         };
         store.insert_agent(&codex_agent).unwrap();
         let cursor_agent = Agent {
@@ -1220,6 +1236,7 @@ mod tests {
             alive: false,
             issue_url: None,
             recent_prompts: Vec::new(),
+            parent_agent_id: None,
         };
         store.insert_agent(&cursor_agent).unwrap();
         let issue_url = "https://github.com/AgentSystemLabs/nebula/issues/15";
@@ -1242,6 +1259,7 @@ mod tests {
             alive: false,
             issue_url: None,
             recent_prompts: Vec::new(),
+            parent_agent_id: None,
         };
         store
             .insert_agent_with_launch_context(&issue_agent, true, None, Some(issue_url))
@@ -1284,6 +1302,7 @@ mod tests {
             alive: false,
             issue_url: None,
             recent_prompts: Vec::new(),
+            parent_agent_id: None,
         };
         store.insert_agent(&custom).unwrap();
         let (_, _, reloaded, _) = store.load_tree().unwrap();
@@ -1350,6 +1369,7 @@ mod tests {
             branch: "main".into(),
             is_main: true,
             sort_order: 0,
+            base_ref: None,
         };
         store.insert_worktree(&worktree).unwrap();
 
@@ -1480,6 +1500,130 @@ mod tests {
         for suffix in ["", "-wal", "-shm"] {
             let _ = std::fs::remove_file(format!("{}{}", path.display(), suffix));
         }
+    }
+
+    /// A v0.42.0 database (v28) gains the worker link and the worktree base
+    /// as NULLs: every existing session reads as top-level, every existing
+    /// checkout as having no recorded base, and nothing else moves.
+    #[test]
+    fn migration_29_adds_parent_and_base_ref_as_nulls() {
+        let path =
+            std::env::temp_dir().join(format!("nebula-mig29-test-{}.db", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.pragma_update(None, "foreign_keys", "ON").unwrap();
+            for (i, migration) in MIGRATIONS.iter().take(28).enumerate() {
+                conn.execute_batch(&format!(
+                    "BEGIN; {migration}; PRAGMA user_version = {}; COMMIT;",
+                    i + 1
+                ))
+                .unwrap();
+            }
+            conn.execute_batch(
+                "INSERT INTO projects (id, name, repo_path, sort_order, created_at)
+                   VALUES ('p1', 'p', '/tmp/p', 0, 0);
+                 INSERT INTO worktrees (id, project_id, path, branch, is_main, sort_order, created_at, pinned)
+                   VALUES ('w1', 'p1', '/tmp/p', 'main', 1, 0, 0, 0);
+                 INSERT INTO agents (id, worktree_id, name, created_at, model)
+                   VALUES ('a1', 'w1', 'existing', 0, 'opus');",
+            )
+            .unwrap();
+        }
+
+        let store = Store::open(&path).unwrap();
+        let (_, worktrees, agents, _) = store.load_tree().unwrap();
+        assert_eq!(worktrees.len(), 1);
+        assert_eq!(worktrees[0].branch, "main");
+        assert_eq!(worktrees[0].base_ref, None);
+        assert_eq!(agents.len(), 1);
+        assert_eq!(agents[0].name, "existing");
+        assert_eq!(agents[0].model.as_deref(), Some("opus"));
+        assert_eq!(agents[0].parent_agent_id, None);
+        let version: i64 = store
+            .conn
+            .lock()
+            .unwrap()
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, MIGRATIONS.len() as i64);
+        drop(store);
+        for suffix in ["", "-wal", "-shm"] {
+            let _ = std::fs::remove_file(format!("{}{}", path.display(), suffix));
+        }
+    }
+
+    /// Deleting an orchestrator clears its workers' link and keeps the
+    /// workers: the FK is SET NULL, never CASCADE.
+    #[test]
+    fn deleting_a_parent_orphans_its_children() {
+        let store = Store::open_in_memory().unwrap();
+        store
+            .insert_project(&Project {
+                id: ProjectId("p".into()),
+                name: "p".into(),
+                repo_path: "/tmp/p".into(),
+                sort_order: 0,
+            })
+            .unwrap();
+        store
+            .insert_worktree(&Worktree {
+                id: WorktreeId("w".into()),
+                project_id: ProjectId("p".into()),
+                path: "/tmp/p".into(),
+                branch: "main".into(),
+                is_main: true,
+                sort_order: 0,
+                base_ref: Some("origin/main".into()),
+            })
+            .unwrap();
+        let agent = |id: &str, parent: Option<&str>| Agent {
+            id: AgentId(id.into()),
+            worktree_id: WorktreeId("w".into()),
+            name: id.into(),
+            status: AgentStatus::Fresh,
+            archived: false,
+            archived_at: 0,
+            unseen: false,
+            kind: AgentKind::Claude,
+            custom_harness: None,
+            model: None,
+            effort: None,
+            session_id: None,
+            cloud_session_id: None,
+            sort_order: 0,
+            status_changed_at: 0,
+            alive: false,
+            issue_url: None,
+            recent_prompts: Vec::new(),
+            parent_agent_id: parent.map(|p| AgentId(p.into())),
+        };
+        store.insert_agent(&agent("lead", None)).unwrap();
+        store.insert_agent(&agent("w1", Some("lead"))).unwrap();
+        store.insert_agent(&agent("w2", Some("lead"))).unwrap();
+        assert_eq!(
+            store
+                .get_agent(&AgentId("w1".into()))
+                .unwrap()
+                .unwrap()
+                .parent_agent_id,
+            Some(AgentId("lead".into()))
+        );
+        assert_eq!(
+            store
+                .get_worktree(&WorktreeId("w".into()))
+                .unwrap()
+                .unwrap()
+                .base_ref
+                .as_deref(),
+            Some("origin/main")
+        );
+
+        store.delete_agent(&AgentId("lead".into())).unwrap();
+        let (_, _, agents, _) = store.load_tree().unwrap();
+        let ids: Vec<_> = agents.iter().map(|a| a.id.as_str()).collect();
+        assert_eq!(ids, ["w1", "w2"], "the workers survive their parent");
+        assert!(agents.iter().all(|a| a.parent_agent_id.is_none()));
     }
 
     /// Real upgrade path: a v12 database (pre-workspaces) walks the whole
@@ -1772,6 +1916,7 @@ mod tests {
             branch: "main".into(),
             is_main: true,
             sort_order: 0,
+            base_ref: None,
         };
         store.insert_worktree(&wt).unwrap();
         let agent = |id: &str| Agent {
@@ -1793,6 +1938,7 @@ mod tests {
             alive: false,
             issue_url: None,
             recent_prompts: Vec::new(),
+            parent_agent_id: None,
         };
 
         // Default-named session: pending until the agent titles it, and the
@@ -1857,6 +2003,7 @@ mod tests {
             branch: "main".into(),
             is_main: true,
             sort_order: 0,
+            base_ref: None,
         };
         store.insert_worktree(&wt).unwrap();
         let id = AgentId("a1".into());
@@ -1881,6 +2028,7 @@ mod tests {
                     alive: false,
                     issue_url: None,
                     recent_prompts: Vec::new(),
+                    parent_agent_id: None,
                 },
                 true,
             )
@@ -1946,6 +2094,7 @@ mod tests {
             branch: "main".into(),
             is_main: true,
             sort_order: 0,
+            base_ref: None,
         };
         store.insert_worktree(&worktree).unwrap();
         store
@@ -1983,6 +2132,7 @@ mod tests {
             branch: "main".into(),
             is_main: true,
             sort_order: 0,
+            base_ref: None,
         };
         store.insert_worktree(&wt).unwrap();
         for (name, status) in [
@@ -2010,6 +2160,7 @@ mod tests {
                     alive: false,
                     issue_url: None,
                     recent_prompts: Vec::new(),
+                    parent_agent_id: None,
                 })
                 .unwrap();
         }
@@ -2054,6 +2205,7 @@ mod tests {
             branch: "main".into(),
             is_main: true,
             sort_order: 0,
+            base_ref: None,
         };
         store.insert_worktree(&worktree).unwrap();
         let seed = |name: &str, status: AgentStatus| {
@@ -2076,6 +2228,7 @@ mod tests {
                 alive: false,
                 issue_url: None,
                 recent_prompts: Vec::new(),
+                parent_agent_id: None,
             };
             store.insert_agent(&agent).unwrap();
             agent.id
@@ -2153,6 +2306,7 @@ mod tests {
                 branch: "main".into(),
                 is_main: true,
                 sort_order: 0,
+                base_ref: None,
             })
             .unwrap();
         let id = AgentId("a1".into());
@@ -2176,6 +2330,7 @@ mod tests {
                 alive: false,
                 issue_url: None,
                 recent_prompts: Vec::new(),
+                parent_agent_id: None,
             })
             .unwrap();
         let entry = |n: usize| PromptEntry {

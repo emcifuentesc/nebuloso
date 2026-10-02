@@ -5587,6 +5587,7 @@ mod tests {
                 },
                 is_main: *is_main,
                 sort_order: 0,
+                base_ref: None,
             })
             .collect();
         app.tree.agents = (0..3)
@@ -5609,6 +5610,7 @@ mod tests {
                 alive: true,
                 issue_url: None,
                 recent_prompts: Vec::new(),
+                parent_agent_id: None,
             })
             .collect();
         app
@@ -5664,6 +5666,7 @@ mod tests {
             branch: "fix".into(),
             is_main: false,
             sort_order: 0,
+            base_ref: None,
         });
         assert_eq!(
             ids(&app),
@@ -5794,6 +5797,7 @@ mod tests {
             branch: "main".into(),
             is_main: true,
             sort_order: 0,
+            base_ref: None,
         });
         (app, worktree_id)
     }
@@ -5897,6 +5901,7 @@ mod tests {
             alive: true,
             issue_url: None,
             recent_prompts: Vec::new(),
+            parent_agent_id: None,
         });
         app.tree.agents.push(Agent {
             id: AgentId("a2".into()),
@@ -6101,6 +6106,7 @@ mod tests {
                     },
                     is_main: w == 0,
                     sort_order: w,
+                    base_ref: None,
                 });
             }
         }
@@ -6130,6 +6136,7 @@ mod tests {
                 alive: true,
                 issue_url: None,
                 recent_prompts: Vec::new(),
+                parent_agent_id: None,
             });
         }
 

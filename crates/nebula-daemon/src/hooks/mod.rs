@@ -490,6 +490,7 @@ mod tests {
                 branch: "main".into(),
                 is_main: true,
                 sort_order: 0,
+                base_ref: None,
             })
             .unwrap();
         let agent = |id: &str| Agent {
@@ -511,6 +512,7 @@ mod tests {
             alive: false,
             issue_url: None,
             recent_prompts: Vec::new(),
+            parent_agent_id: None,
         };
         store
             .insert_agent_with_auto_title(&agent("pending"), true)

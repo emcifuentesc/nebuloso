@@ -2841,6 +2841,7 @@ mod tests {
             branch: "main".into(),
             is_main: true,
             sort_order: 0,
+            base_ref: None,
         });
         app
     }

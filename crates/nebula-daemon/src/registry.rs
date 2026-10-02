@@ -682,6 +682,7 @@ impl Daemon {
                 path: entry.path.clone(),
                 branch: entry.branch,
                 sort_order: 0,
+                base_ref: None,
             };
             self.store.insert_worktree(&worktree)?;
             self.broadcast(ServerEvent::EntityUpserted {
@@ -823,6 +824,7 @@ impl Daemon {
             branch: branch.to_string(),
             is_main: false,
             sort_order: 0,
+            base_ref: None,
         };
         self.store.insert_worktree(&worktree)?;
         self.broadcast(ServerEvent::EntityUpserted {
@@ -957,6 +959,7 @@ impl Daemon {
                 path: entry.path.clone(),
                 branch: entry.branch.clone(),
                 sort_order: 0,
+                base_ref: None,
             };
             self.store.insert_worktree(&worktree)?;
             adopted = true;
@@ -1104,6 +1107,7 @@ impl Daemon {
             alive: false,
             issue_url: issue_url.clone(),
             recent_prompts: Vec::new(),
+            parent_agent_id: None,
         };
         self.store.insert_agent_with_launch_context(
             &agent,
@@ -1275,6 +1279,7 @@ impl Daemon {
             alive: false,
             issue_url: None,
             recent_prompts: Vec::new(),
+            parent_agent_id: None,
         };
         self.spawn_agent_session(&agent, &worktree, DEFAULT_COLS, DEFAULT_ROWS)?;
         tracing::info!(agent = %agent.id, kind = kind.as_str(), worktree = %worktree.branch, "prewarmed agent session");
@@ -4281,6 +4286,7 @@ mod tests {
             branch: "feat".into(),
             is_main: false,
             sort_order: 0,
+            base_ref: None,
         };
         let all = test_registry();
         for kind in [AgentKind::Claude, AgentKind::Codex, AgentKind::Pi] {
@@ -4676,6 +4682,7 @@ mod tests {
             branch: "main".into(),
             is_main: true,
             sort_order: 0,
+            base_ref: None,
         };
         daemon.store.insert_worktree(&worktree).unwrap();
         (dir, worktree)
@@ -5340,6 +5347,7 @@ mod tests {
                 branch: id.into(),
                 is_main,
                 sort_order: 0,
+                base_ref: None,
             })
             .unwrap();
     }
@@ -5366,6 +5374,7 @@ mod tests {
                 alive: false,
                 issue_url: None,
                 recent_prompts: Vec::new(),
+                parent_agent_id: None,
             })
             .unwrap();
     }
@@ -5480,6 +5489,7 @@ mod tests {
             branch: "feat".into(),
             is_main: false,
             sort_order: 1,
+            base_ref: None,
         };
         daemon.store.insert_worktree(&feat).unwrap();
         // `/bin/cat` stands in for the CLI, on the first boot and the
@@ -5645,6 +5655,7 @@ mod tests {
                     alive: false,
                     issue_url: None,
                     recent_prompts: Vec::new(),
+                    parent_agent_id: None,
                 },
                 true,
             )

@@ -377,6 +377,7 @@ mod tests {
                 branch: "main".into(),
                 is_main: true,
                 sort_order: 0,
+                base_ref: None,
             })
             .unwrap();
         let id = AgentId("a1".into());
@@ -401,6 +402,7 @@ mod tests {
                     alive: false,
                     issue_url: None,
                     recent_prompts: Vec::new(),
+                    parent_agent_id: None,
                 },
                 true,
             )

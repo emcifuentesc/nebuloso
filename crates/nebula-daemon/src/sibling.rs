@@ -138,6 +138,7 @@ mod tests {
                     branch: id.into(),
                     is_main,
                     sort_order: 0,
+                    base_ref: None,
                 })
                 .unwrap();
         }
@@ -164,6 +165,7 @@ mod tests {
             alive: false,
             issue_url: None,
             recent_prompts: Vec::new(),
+            parent_agent_id: None,
         }
     }
 

@@ -83,6 +83,7 @@ fn push_worktree(app: &mut App, project: ProjectId, branch: String) -> WorktreeI
         branch,
         is_main: false,
         sort_order: 0,
+        base_ref: None,
     });
     worktree
 }
@@ -216,6 +217,7 @@ pub(super) fn stage_agent(
         alive: false,
         issue_url: None,
         recent_prompts: Vec::new(),
+        parent_agent_id: None,
     });
     if let Some(i) = project.and_then(|id| {
         app.project_rows()
@@ -684,6 +686,7 @@ mod tests {
             alive: true,
             issue_url: None,
             recent_prompts: Vec::new(),
+            parent_agent_id: None,
         }
     }
 
@@ -2074,6 +2077,7 @@ mod tests {
                     branch: "main".into(),
                     is_main: true,
                     sort_order: 0,
+                    base_ref: None,
                 }),
             },
         );

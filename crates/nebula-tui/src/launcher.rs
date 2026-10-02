@@ -1900,6 +1900,7 @@ mod tests {
             branch: branch.into(),
             is_main,
             sort_order: 0,
+            base_ref: None,
         }
     }
 
@@ -1923,6 +1924,7 @@ mod tests {
             alive: true,
             issue_url: None,
             recent_prompts: Vec::new(),
+            parent_agent_id: None,
         }
     }
 

@@ -2498,6 +2498,7 @@ mod tests {
                     branch: "feat".into(),
                     is_main: false,
                     sort_order: 1,
+                    base_ref: None,
                 }),
             },
         );
@@ -2523,6 +2524,7 @@ mod tests {
                     alive: true,
                     issue_url: None,
                     recent_prompts: Vec::new(),
+                    parent_agent_id: None,
                 }),
             },
         );
@@ -2563,6 +2565,7 @@ mod tests {
                     alive: true,
                     issue_url: None,
                     recent_prompts: Vec::new(),
+                    parent_agent_id: None,
                 }),
             },
         );
@@ -2590,6 +2593,7 @@ mod tests {
                     branch: "main".into(),
                     is_main: true,
                     sort_order: 0,
+                    base_ref: None,
                 }),
             },
         );
@@ -2615,6 +2619,7 @@ mod tests {
                     alive: true,
                     issue_url: None,
                     recent_prompts: Vec::new(),
+                    parent_agent_id: None,
                 }),
             },
         );
@@ -3478,6 +3483,7 @@ mod tests {
                     branch: "idle".into(),
                     is_main: false,
                     sort_order: 2,
+                    base_ref: None,
                 }),
             },
         );
@@ -5234,6 +5240,7 @@ mod tests {
                             branch: "feat".into(),
                             is_main: false,
                             sort_order: 1,
+                            base_ref: None,
                         }),
                     },
                 );
@@ -6564,6 +6571,7 @@ mod tests {
                     branch: "main".into(),
                     is_main: true,
                     sort_order: 0,
+                    base_ref: None,
                 }),
             },
         );
@@ -7721,6 +7729,7 @@ mod tests {
                         alive: true,
                         issue_url: None,
                         recent_prompts: Vec::new(),
+                        parent_agent_id: None,
                     }),
                 },
             );
