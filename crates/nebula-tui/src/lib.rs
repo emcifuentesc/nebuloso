@@ -25,6 +25,7 @@ pub mod launcher;
 pub mod links;
 pub(crate) mod list_hit;
 pub mod markdown;
+pub mod nesting;
 pub mod overlay_close;
 pub mod palette;
 pub mod perf;
