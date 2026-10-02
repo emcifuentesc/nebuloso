@@ -7,7 +7,7 @@ use std::path::PathBuf;
 
 /// Bump on any breaking change to these enums. The daemon refuses mismatched
 /// clients; the client then offers a kill-and-restart of the old daemon.
-pub const PROTOCOL_VERSION: u32 = 46;
+pub const PROTOCOL_VERSION: u32 = 47;
 
 /// Max IPC frame size (length prefix sanity bound).
 pub const MAX_FRAME_LEN: u32 = 4 * 1024 * 1024;
@@ -254,6 +254,17 @@ pub enum ClientRequest {
         id: AgentId,
         ids: Vec<AgentId>,
     },
+    /// `nebula send <id> <text>`: `text` down the PTY of the caller's
+    /// worker `child` as its next turn, the way the follow-up box sends one
+    /// ([`crate::paste::turn_writes`]). Refused while the worker, or another
+    /// of the caller's workers in its worktree, is mid-turn. Answered with
+    /// `Ack` once the text is written.
+    SendToChild {
+        req_id: u64,
+        id: AgentId,
+        child: AgentId,
+        text: String,
+    },
     /// `nebula open <file>…`, run by the agent from inside its own session:
     /// show these files to the user in every attached TUI's FILE TABS —
     /// one tab per file, the focused one previewed, Enter editing it.
@@ -435,8 +446,19 @@ pub struct ChildStatus {
     pub kind: AgentKind,
     pub status: AgentStatus,
     pub status_changed_at: i64,
+    /// A `nebula send` reached it and its status machine has not yet
+    /// reported the turn that message starts.
+    pub awaiting_turn: bool,
     pub worktree: PathBuf,
     pub branch: String,
+}
+
+impl ChildStatus {
+    /// What `nebula wait` waits for: a settled status that no sent message
+    /// is about to move again.
+    pub fn is_settled(&self) -> bool {
+        self.status.is_settled() && !self.awaiting_turn
+    }
 }
 
 /// The worktree a worker is started in: a branch that must not exist yet,
@@ -612,4 +634,39 @@ pub enum ServerEvent {
         session: SessionRef,
         tail: Option<OutputTail>,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_child_is_settled_only_with_no_sent_turn_pending() {
+        for status in [
+            AgentStatus::Fresh,
+            AgentStatus::Running,
+            AgentStatus::Finished,
+            AgentStatus::NeedsFeedback,
+            AgentStatus::Terminated,
+            AgentStatus::Disconnected,
+        ] {
+            for awaiting_turn in [false, true] {
+                let child = ChildStatus {
+                    id: AgentId("w".into()),
+                    name: "w".into(),
+                    kind: AgentKind::Claude,
+                    status,
+                    status_changed_at: 0,
+                    awaiting_turn,
+                    worktree: PathBuf::from("/w"),
+                    branch: "w".into(),
+                };
+                assert_eq!(
+                    child.is_settled(),
+                    !awaiting_turn && !matches!(status, AgentStatus::Fresh | AgentStatus::Running),
+                    "{status:?} awaiting_turn={awaiting_turn}"
+                );
+            }
+        }
+    }
 }

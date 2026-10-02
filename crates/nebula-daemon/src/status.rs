@@ -267,6 +267,11 @@ pub struct AgentStatusMachine {
     /// that arrives meanwhile holds at `running`: the respawn that follows
     /// it carries the work straight on (`hold_for_relocation`).
     relocating: bool,
+    /// Set by a `nebula send` that reached the PTY; cleared by the next
+    /// status this machine settles on, changed or not (a turn so fast it
+    /// goes `finished` → `finished`), or by the process ending. Until then
+    /// `nebula wait` does not count the agent settled.
+    awaiting_turn: bool,
 }
 
 impl AgentStatusMachine {
@@ -285,6 +290,7 @@ impl AgentStatusMachine {
             feedback_left_at: None,
             launch_idle_pending: false,
             relocating: false,
+            awaiting_turn: false,
         }
     }
 
@@ -313,6 +319,15 @@ impl AgentStatusMachine {
     /// target this machine is replaced by [`Self::launching`].
     pub fn set_relocating(&mut self, relocating: bool) {
         self.relocating = relocating;
+    }
+
+    pub fn awaiting_turn(&self) -> bool {
+        self.awaiting_turn
+    }
+
+    /// A message was just written down the PTY as the agent's next turn.
+    pub fn await_turn(&mut self) {
+        self.awaiting_turn = true;
     }
 
     pub fn handle(
@@ -499,6 +514,7 @@ impl AgentStatusMachine {
             HookEvent::SessionEnded { exit_code } => {
                 // Dead process: laggard subagent POSTs must never resurrect it.
                 self.subagents.clear();
+                self.awaiting_turn = false;
                 self.stop_held = false;
                 self.drain_idle_since = None;
                 self.subagent_alive_at = None;
@@ -699,6 +715,7 @@ impl AgentStatusMachine {
     }
 
     fn set_status(&mut self, status: AgentStatus, effects: &mut Vec<Effect>) {
+        self.awaiting_turn = false;
         if self.status != status {
             self.status = status;
             effects.push(Effect::SetStatus(status));
@@ -730,6 +747,44 @@ mod tests {
         assert!(fx.contains(&Effect::SaveSessionId("s1".into())));
         let fx = m.handle(HookEvent::Stop, Some("s1"), now + Duration::from_secs(10));
         assert_eq!(status_of(&fx), Some(AgentStatus::Finished));
+    }
+
+    /// A turn so fast that no `running` was ever seen still answers the
+    /// send: the Stop settles the machine on `finished` again, no change.
+    #[test]
+    fn a_sent_turn_is_answered_by_the_next_status_even_an_unchanged_one() {
+        let now = t0();
+        let mut m = AgentStatusMachine::new(AgentStatus::Finished, None);
+        m.await_turn();
+        let fx = m.handle(
+            HookEvent::Notification {
+                notification_type: Some("auth_success".into()),
+            },
+            None,
+            now,
+        );
+        assert!(fx.is_empty());
+        assert!(
+            m.awaiting_turn(),
+            "an event that settles nothing is not the turn"
+        );
+        let fx = m.handle(HookEvent::Stop, None, now);
+        assert_eq!(status_of(&fx), None);
+        assert!(!m.awaiting_turn());
+
+        m.await_turn();
+        m.handle(HookEvent::UserPromptSubmit, None, now);
+        assert_eq!(m.status(), AgentStatus::Running);
+        assert!(!m.awaiting_turn());
+    }
+
+    #[test]
+    fn the_process_ending_answers_a_sent_turn() {
+        let mut m = AgentStatusMachine::new(AgentStatus::Finished, None);
+        m.await_turn();
+        let fx = m.handle(HookEvent::SessionEnded { exit_code: Some(0) }, None, t0());
+        assert_eq!(status_of(&fx), None);
+        assert!(!m.awaiting_turn());
     }
 
     /// A `nebula worktree` relocation waits on the turn's end and then

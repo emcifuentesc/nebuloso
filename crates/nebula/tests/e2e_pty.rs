@@ -4560,10 +4560,12 @@ async fn spawn_worktree_starts_a_parented_worker_in_a_new_checkout() {
     wait_for_exit(&mut daemon);
 }
 
-/// `nebula children`, `status` and `wait` over the real binary: the lead
-/// sees its worker, a worker with none sees [], an agent that is not the
-/// caller's worker is refused with nothing printed, `wait` on a worker
-/// still at work times out with 12, and a Stop hook lets it return 0.
+/// `nebula children`, `status`, `wait` and `send` over the real binary: the
+/// lead sees its worker, a worker with none sees [], an agent that is not
+/// the caller's worker is refused with nothing printed, `wait` on a worker
+/// still at work times out with 12, and a Stop hook lets it return 0. A
+/// `send` reaches the worker's PTY and holds `wait` off until the turn it
+/// starts has ended, even though the worker reads `finished` meanwhile.
 #[tokio::test]
 async fn children_status_and_wait_report_the_callers_workers() {
     let env = TestEnv::new();
@@ -4574,7 +4576,7 @@ async fn children_status_and_wait_report_the_callers_workers() {
     std::fs::write(
         &script,
         format!(
-            "#!/bin/sh\nenv | grep '^NEBULA_' > '{}'/$NEBULA_AGENT_ID.env\nexec sleep 600\n",
+            "#!/bin/sh\nenv | grep '^NEBULA_' > '{0}'/$NEBULA_AGENT_ID.env\nexec tee '{0}'/$NEBULA_AGENT_ID.out > /dev/null\n",
             env_dir.display()
         ),
     )
@@ -4663,6 +4665,42 @@ async fn children_status_and_wait_report_the_callers_workers() {
     assert_eq!(out.status.code(), Some(0), "{out:?}");
     let printed: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(printed[0]["status"], "finished");
+
+    let out = agent_cli(&env, &lead, &["send", &worker.0, "next"]);
+    assert!(out.status.success(), "send failed: {out:?}");
+    assert!(out.stdout.is_empty(), "send prints nothing: {out:?}");
+    let typed = env_dir.join(format!("{}.out", worker.0));
+    let deadline = std::time::Instant::now() + EVENT_TIMEOUT;
+    while std::fs::read_to_string(&typed).unwrap_or_default() != "next\n" {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the worker's PTY never got the turn: {:?}",
+            std::fs::read_to_string(&typed)
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let out = agent_cli(&env, &lead, &["wait", "--timeout", "2s", &worker.0]);
+    assert_eq!(
+        out.status.code(),
+        Some(12),
+        "a sent turn is not over: {out:?}"
+    );
+    let printed: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(printed[0]["status"], "finished");
+    assert_eq!(printed[0]["awaiting_turn"], true);
+    for event in ["UserPromptSubmit", "Stop"] {
+        let (status, _) = hook_post(port, &hook(event), &token).await;
+        assert_eq!(status, 200, "{event}");
+    }
+    let out = agent_cli(&env, &lead, &["wait", "--timeout", "10s", &worker.0]);
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+
+    let out = agent_cli(&env, &worker, &["send", &lead.0, "hi"]);
+    assert!(!out.status.success(), "send to a stranger must fail");
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains(&format!("{} is not your worker", lead.0)),
+        "{out:?}"
+    );
 
     write_frame(&mut c, &ClientRequest::Shutdown).await.unwrap();
     wait_for_exit(&mut daemon);
