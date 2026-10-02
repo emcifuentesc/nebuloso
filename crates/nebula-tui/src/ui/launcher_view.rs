@@ -5790,6 +5790,7 @@ mod tests {
             unattended: false,
             purpose: None,
             orchestrator: parent.is_none(),
+            goal: None,
         };
         app.tree.agents = vec![
             agent("o", "w0", "orchestrate", AgentStatus::Running, None),
