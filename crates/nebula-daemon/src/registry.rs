@@ -1465,7 +1465,7 @@ impl Daemon {
     /// just-installed CLI gets picked up quickly. Probe trouble (timeout,
     /// spawn error) fails open — a doomed warm spawn is still graceful.
     /// Custom harnesses pass their entry's program; built-ins their CLI.
-    async fn cli_available(&self, program: &str) -> bool {
+    pub(crate) async fn cli_available(&self, program: &str) -> bool {
         if std::env::var(env::AGENT_CMD).is_ok() {
             return true; // test override is spawned verbatim
         }

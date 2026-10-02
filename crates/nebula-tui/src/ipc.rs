@@ -989,6 +989,7 @@ mod tests {
             id: AgentId("w".into()),
             name: "w".into(),
             kind: AgentKind::Claude,
+            role: None,
             status,
             status_changed_at: 0,
             awaiting_turn,

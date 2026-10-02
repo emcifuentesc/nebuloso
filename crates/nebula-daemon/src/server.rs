@@ -556,6 +556,19 @@ async fn handle_client(daemon: Arc<Daemon>, stream: UnixStream) -> Result<()> {
                     };
                     let _ = out_tx.send(ev).await;
                 }
+                ClientRequest::Roster { req_id, id } => {
+                    let ev = match daemon.roster(&id).await {
+                        Ok(orchestration) => ServerEvent::Roster {
+                            req_id,
+                            orchestration,
+                        },
+                        Err(e) => ServerEvent::Error {
+                            req_id: Some(req_id),
+                            message: format!("{e:#}"),
+                        },
+                    };
+                    let _ = out_tx.send(ev).await;
+                }
                 ClientRequest::OpenFiles { req_id, id, paths } => {
                     reply_done(&out_tx, req_id, daemon.open_files(&id, paths)).await;
                 }

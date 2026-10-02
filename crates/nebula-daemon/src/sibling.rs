@@ -6,11 +6,14 @@
 //!
 //! `nebula spawn --child` / `--worktree` makes the new agent the caller's
 //! WORKER: it records the caller as its parent, can run in a worktree of
-//! its own, and is bounded — one level deep, [`MAX_CHILDREN`] at a time.
+//! its own, and is bounded — one level deep, the project's `max_children`
+//! at a time. `--role` starts it from a ROSTER entry.
 
 use std::sync::Arc;
 
 use anyhow::{bail, Context, Result};
+use nebula_core::orchestration::{roster_order, Orchestration, Role, DEFAULT_ROSTER};
+use nebula_core::paths;
 use nebula_core::{
     Agent, AgentId, AgentKind, AgentStatus, ChildSpawn, ChildStatus, EntityId, SessionRef,
     SpawnWorktree, WorkerResult, Worktree, WorktreeId,
@@ -18,10 +21,6 @@ use nebula_core::{
 
 use crate::git;
 use crate::registry::{validate_starting_prompt, CreateAgentSpec, Daemon};
-
-/// How many unarchived workers one session may have at once. An archived
-/// worker is done with, so it frees its slot.
-pub(crate) const MAX_CHILDREN: usize = 8;
 
 /// The longest message `nebula send` writes down a worker's PTY, in UTF-8
 /// bytes.
@@ -138,16 +137,19 @@ impl Daemon {
     /// AUTO-TITLE applies, and `starting_prompt` as the first prompt (which
     /// `create_agent` validates). With `child` it is the caller's worker:
     /// parented on the caller, with `child`'s model / effort over the
-    /// inherited ones, and refused when the caller is itself a worker, is
-    /// at [`MAX_CHILDREN`], or the worker would be a harness without hooks.
-    /// Its worktree is still the caller's; `spawn_sibling_agent` swaps in a
-    /// new one. Pure lookup, so it is unit-testable without a PTY.
+    /// inherited ones — or, with a role, over its `orchestration` roster
+    /// entry's harness, model, effort and unattended flag — and refused when
+    /// the caller is itself a worker, has `max_children` running, or the
+    /// worker would be a harness without hooks. Its worktree is still the
+    /// caller's; `spawn_sibling_agent` swaps in a new one. Pure lookup, so it
+    /// is unit-testable without a PTY.
     pub(crate) fn sibling_spec(
         &self,
         id: &AgentId,
         kind: Option<AgentKind>,
         starting_prompt: &str,
         child: Option<&ChildSpawn>,
+        orchestration: &Orchestration,
     ) -> Result<CreateAgentSpec> {
         let caller = self.store.get_agent(id)?.context("agent not found")?;
         if caller.archived {
@@ -159,19 +161,40 @@ impl Daemon {
             .filter(|a| a.worktree_id == caller.worktree_id)
             .map(|a| a.name.clone())
             .collect::<Vec<_>>();
-        let kind = kind.unwrap_or(caller.kind);
-        let (mut model, mut effort) = if kind == caller.kind {
-            (caller.model.clone(), caller.effort.clone())
-        } else {
-            (None, None)
+        let role = match child.and_then(|c| c.role.as_deref()) {
+            None => None,
+            Some(key) => {
+                let Some(entry) = orchestration.roster.get(key) else {
+                    let keys = orchestration.roster.keys().collect::<Vec<_>>();
+                    bail!("no role {key} in the roster ({})", keys.join(", "));
+                };
+                entry
+                    .check_role(key, Role::Implement)
+                    .map_err(anyhow::Error::msg)?;
+                if kind.is_some_and(|k| k != entry.kind || entry.custom_harness.is_some()) {
+                    bail!("--kind contradicts role {key}");
+                }
+                Some((key, entry))
+            }
         };
-        // A sibling on the same harness keeps its custom registry id; an
-        // override to another harness drops it (an override to Custom
-        // without an id is refused at create with its reason).
-        let custom_harness = if kind == caller.kind {
-            caller.custom_harness.clone()
-        } else {
-            None
+        // A role names the worker's harness outright. Otherwise a sibling on
+        // the caller's harness keeps its model, effort and custom registry
+        // id; an override to another harness drops them (an override to
+        // Custom without an id is refused at create with its reason).
+        let (kind, custom_harness, mut model, mut effort) = match (role, kind) {
+            (Some((_, entry)), _) => (
+                entry.kind,
+                entry.custom_harness.clone(),
+                entry.model.clone(),
+                entry.effort.clone(),
+            ),
+            (None, Some(kind)) if kind != caller.kind => (kind, None, None, None),
+            (None, _) => (
+                caller.kind,
+                caller.custom_harness.clone(),
+                caller.model.clone(),
+                caller.effort.clone(),
+            ),
         };
         let parent_agent_id = match child {
             None => None,
@@ -183,8 +206,8 @@ impl Daemon {
                     .iter()
                     .filter(|a| a.parent_agent_id.as_ref() == Some(id) && !a.archived)
                     .count();
-                if running >= MAX_CHILDREN {
-                    bail!("child limit reached ({MAX_CHILDREN})");
+                if running >= orchestration.max_children {
+                    bail!("child limit reached ({})", orchestration.max_children);
                 }
                 // The parent learns a worker's turn ended through its hooks;
                 // a harness without them would run unwatched.
@@ -209,9 +232,51 @@ impl Daemon {
             pr_url: None,
             issue_url: None,
             parent_agent_id,
-            role: None,
-            unattended: false,
+            role: role.map(|(key, _)| key.to_string()),
+            unattended: role.is_some_and(|(_, entry)| entry.unattended),
         })
+    }
+
+    /// The `orchestration` settings for the project `worktree` is in,
+    /// resolved against the current config and harness registry. The
+    /// default roster asks PATH the way a create does.
+    pub(crate) async fn orchestration_for(&self, worktree: &WorktreeId) -> Result<Orchestration> {
+        let worktree = self
+            .store
+            .get_worktree(worktree)?
+            .context("worktree not found")?;
+        let project = self
+            .store
+            .get_project(&worktree.project_id)?
+            .context("project not found")?;
+        let config = crate::config::Config::load();
+        let registry = nebula_core::harness::registry(&config.harnesses, &config.custom_harnesses);
+        let mut installed = Vec::new();
+        for kind in DEFAULT_ROSTER {
+            if let Some(harness) = registry.iter().find(|h| h.id == kind.as_str()) {
+                let program = harness.program.trim();
+                if self.cli_available(program).await {
+                    installed.push(program.to_string());
+                }
+            }
+        }
+        let order = roster_order(
+            &[&paths::config_path(), &paths::config_local_path()],
+            &project.repo_path,
+        );
+        Orchestration::resolve(
+            config.orchestration(&project.repo_path).as_ref(),
+            &order,
+            &registry,
+            &|program| installed.iter().any(|p| p == program),
+        )
+        .map_err(anyhow::Error::msg)
+    }
+
+    /// `nebula roster`: the roster resolved for the caller's project.
+    pub async fn roster(&self, caller: &AgentId) -> Result<Orchestration> {
+        let caller = self.store.get_agent(caller)?.context("agent not found")?;
+        self.orchestration_for(&caller.worktree_id).await
     }
 
     /// The new WORKTREE a worker runs in, created in the caller's project
@@ -256,7 +321,14 @@ impl Daemon {
         starting_prompt: &str,
         child: Option<&ChildSpawn>,
     ) -> Result<(AgentId, Worktree)> {
-        let mut spec = self.sibling_spec(id, kind, starting_prompt, child)?;
+        let orchestration = match child {
+            Some(_) => {
+                let caller = self.store.get_agent(id)?.context("agent not found")?;
+                self.orchestration_for(&caller.worktree_id).await?
+            }
+            None => Orchestration::default(),
+        };
+        let mut spec = self.sibling_spec(id, kind, starting_prompt, child, &orchestration)?;
         if let Some(wanted) = child.and_then(|c| c.worktree.as_ref()) {
             // Checked before the checkout exists, so a bad prompt does not
             // leave a worktree behind.
@@ -297,6 +369,7 @@ impl Daemon {
                     id: agent.id,
                     name: agent.name,
                     kind: agent.kind,
+                    role: agent.role,
                     status: agent.status,
                     status_changed_at: agent.status_changed_at,
                     worktree: worktree.path,
@@ -374,6 +447,7 @@ impl Daemon {
             id: agent.id,
             name: agent.name,
             kind: agent.kind,
+            role: agent.role,
             status: agent.status,
             report,
             report_at,
@@ -507,6 +581,7 @@ mod tests {
                 None,
                 "Fix the login redirect",
                 None,
+                &Orchestration::default(),
             )
             .unwrap();
         assert_eq!(spec.worktree.to_string(), "feat");
@@ -531,6 +606,7 @@ mod tests {
             worktree: None,
             model: model.map(str::to_string),
             effort: None,
+            role: None,
         }
     }
 
@@ -547,6 +623,7 @@ mod tests {
                 None,
                 "Port the tests",
                 Some(&child(Some("sonnet"))),
+                &Orchestration::default(),
             )
             .unwrap();
         assert_eq!(spec.parent_agent_id, Some(AgentId("agent-1".into())));
@@ -574,13 +651,25 @@ mod tests {
         worker.parent_agent_id = Some(AgentId("lead".into()));
         daemon.store.insert_agent(&worker).unwrap();
         let err = daemon
-            .sibling_spec(&AgentId("worker".into()), None, "x", Some(&child(None)))
+            .sibling_spec(
+                &AgentId("worker".into()),
+                None,
+                "x",
+                Some(&child(None)),
+                &Orchestration::default(),
+            )
             .err()
             .expect("depth is capped at one");
         assert_eq!(err.to_string(), "a worker cannot start workers");
         // A plain spawn from a worker is still a sibling, as today.
         assert!(daemon
-            .sibling_spec(&AgentId("worker".into()), None, "x", None)
+            .sibling_spec(
+                &AgentId("worker".into()),
+                None,
+                "x",
+                None,
+                &Orchestration::default()
+            )
             .is_ok());
     }
 
@@ -1042,14 +1131,20 @@ mod tests {
         done.parent_agent_id = Some(AgentId("lead".into()));
         done.archived = true;
         daemon.store.insert_agent(&done).unwrap();
-        for n in 0..MAX_CHILDREN - 1 {
+        for n in 0..nebula_core::orchestration::DEFAULT_MAX_CHILDREN - 1 {
             let mut worker = agent(&format!("w{n}"), "feat", AgentKind::Claude, None);
             worker.parent_agent_id = Some(AgentId("lead".into()));
             daemon.store.insert_agent(&worker).unwrap();
         }
         assert!(
             daemon
-                .sibling_spec(&AgentId("lead".into()), None, "x", Some(&child(None)))
+                .sibling_spec(
+                    &AgentId("lead".into()),
+                    None,
+                    "x",
+                    Some(&child(None)),
+                    &Orchestration::default()
+                )
                 .is_ok(),
             "an archived worker frees its slot"
         );
@@ -1057,10 +1152,141 @@ mod tests {
         eighth.parent_agent_id = Some(AgentId("lead".into()));
         daemon.store.insert_agent(&eighth).unwrap();
         let err = daemon
-            .sibling_spec(&AgentId("lead".into()), None, "x", Some(&child(None)))
+            .sibling_spec(
+                &AgentId("lead".into()),
+                None,
+                "x",
+                Some(&child(None)),
+                &Orchestration::default(),
+            )
             .err()
             .expect("eight running workers is the cap");
         assert_eq!(err.to_string(), "child limit reached (8)");
+    }
+
+    #[test]
+    fn max_children_comes_from_the_orchestration() {
+        let daemon = daemon();
+        daemon
+            .store
+            .insert_agent(&agent("lead", "feat", AgentKind::Claude, None))
+            .unwrap();
+        let two = Orchestration {
+            max_children: 2,
+            ..Orchestration::default()
+        };
+        let spawn = |orchestration: &Orchestration| {
+            daemon.sibling_spec(
+                &AgentId("lead".into()),
+                None,
+                "x",
+                Some(&child(None)),
+                orchestration,
+            )
+        };
+        for n in 0..2 {
+            assert!(spawn(&two).is_ok(), "slot {n}");
+            let mut worker = agent(&format!("w{n}"), "feat", AgentKind::Claude, None);
+            worker.parent_agent_id = Some(AgentId("lead".into()));
+            daemon.store.insert_agent(&worker).unwrap();
+        }
+        assert_eq!(
+            spawn(&two).err().unwrap().to_string(),
+            "child limit reached (2)"
+        );
+        assert!(spawn(&Orchestration::default()).is_ok());
+    }
+
+    fn roster() -> Orchestration {
+        let raw = serde_json::json!({"roster": {
+            "fast": {"kind": "codex", "model": "gpt-5.5", "effort": "low", "unattended": true},
+            "careful": {"kind": "claude", "model": "opus", "effort": "max", "unattended": true},
+            "plain": {"kind": "claude"},
+            "reviewer": {"kind": "pi", "roles": ["review"]},
+        }});
+        Orchestration::resolve(
+            Some(&raw),
+            &[],
+            &nebula_core::harness::registry(&Default::default(), &[]),
+            &|_| true,
+        )
+        .unwrap()
+    }
+
+    fn role(key: &str) -> ChildSpawn {
+        ChildSpawn {
+            role: Some(key.into()),
+            ..child(None)
+        }
+    }
+
+    #[test]
+    fn a_role_names_the_workers_harness_model_effort_and_unattended_flag() {
+        let daemon = daemon();
+        daemon
+            .store
+            .insert_agent(&agent("lead", "feat", AgentKind::Claude, Some("sonnet")))
+            .unwrap();
+        let orchestration = roster();
+        let spawn = |kind: Option<AgentKind>, child: ChildSpawn| {
+            daemon.sibling_spec(
+                &AgentId("lead".into()),
+                kind,
+                "x",
+                Some(&child),
+                &orchestration,
+            )
+        };
+
+        let spec = spawn(None, role("fast")).unwrap();
+        assert_eq!(spec.kind, AgentKind::Codex);
+        assert_eq!(
+            (spec.model.as_deref(), spec.effort.as_deref()),
+            (Some("gpt-5.5"), Some("low"))
+        );
+        assert_eq!(spec.role.as_deref(), Some("fast"));
+        assert!(spec.unattended);
+        assert_eq!(spec.parent_agent_id, Some(AgentId("lead".into())));
+
+        let spec = spawn(
+            Some(AgentKind::Claude),
+            ChildSpawn {
+                model: Some("haiku".into()),
+                effort: Some("low".into()),
+                ..role("careful")
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            (spec.kind, spec.model.as_deref(), spec.effort.as_deref()),
+            (AgentKind::Claude, Some("haiku"), Some("low")),
+            "--model and --effort win over the role; a --kind that agrees is fine"
+        );
+
+        let spec = spawn(None, role("plain")).unwrap();
+        assert_eq!(
+            (spec.model.as_deref(), spec.effort.as_deref()),
+            (None, None),
+            "a role's harness defaults, not the lead's sonnet / high"
+        );
+        assert!(!spec.unattended);
+
+        let plain = spawn(None, child(None)).unwrap();
+        assert_eq!((plain.role, plain.unattended), (None, false));
+
+        let err = |kind, child| spawn(kind, child).err().unwrap().to_string();
+        assert_eq!(
+            err(Some(AgentKind::Claude), role("fast")),
+            "--kind contradicts role fast"
+        );
+        assert_eq!(
+            err(None, role("reviewer")),
+            "role reviewer cannot implement"
+        );
+        assert_eq!(
+            err(None, role("nope")),
+            "no role nope in the roster (careful, fast, plain, reviewer)"
+        );
     }
 
     #[test]
@@ -1076,13 +1302,20 @@ mod tests {
                 Some(AgentKind::Muse),
                 "x",
                 Some(&child(None)),
+                &Orchestration::default(),
             )
             .err()
             .expect("muse is refused as a worker");
         assert_eq!(err.to_string(), "muse has no hooks; it cannot be a worker");
         assert!(
             daemon
-                .sibling_spec(&AgentId("lead".into()), Some(AgentKind::Muse), "x", None)
+                .sibling_spec(
+                    &AgentId("lead".into()),
+                    Some(AgentKind::Muse),
+                    "x",
+                    None,
+                    &Orchestration::default()
+                )
                 .is_ok(),
             "a muse sibling is still fine"
         );
@@ -1208,6 +1441,7 @@ mod tests {
             }),
             model: None,
             effort: None,
+            role: None,
         };
         let err = daemon
             .spawn_sibling_agent(&AgentId("lead".into()), None, "  ", Some(&child))
@@ -1231,6 +1465,7 @@ mod tests {
                 Some(AgentKind::Codex),
                 "Run the tests",
                 None,
+                &Orchestration::default(),
             )
             .unwrap();
         assert_eq!(spec.kind, AgentKind::Codex);
@@ -1245,6 +1480,7 @@ mod tests {
                 Some(AgentKind::Claude),
                 "Run the tests",
                 None,
+                &Orchestration::default(),
             )
             .unwrap();
         assert_eq!(same.model.as_deref(), Some("opus"));
@@ -1256,7 +1492,13 @@ mod tests {
         // `CreateAgentSpec` is deliberately not Debug (it carries the
         // prompt), so the Err side is taken by hand.
         let missing = daemon
-            .sibling_spec(&AgentId("nope".into()), None, "x", None)
+            .sibling_spec(
+                &AgentId("nope".into()),
+                None,
+                "x",
+                None,
+                &Orchestration::default(),
+            )
             .err()
             .expect("an unknown caller is refused");
         assert!(missing.to_string().contains("agent not found"));
@@ -1265,7 +1507,13 @@ mod tests {
         archived.archived = true;
         daemon.store.insert_agent(&archived).unwrap();
         let err = daemon
-            .sibling_spec(&AgentId("agent-1".into()), None, "x", None)
+            .sibling_spec(
+                &AgentId("agent-1".into()),
+                None,
+                "x",
+                None,
+                &Orchestration::default(),
+            )
             .err()
             .expect("an archived caller is refused");
         assert!(err.to_string().contains("archived"));

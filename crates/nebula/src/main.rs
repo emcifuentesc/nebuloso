@@ -53,6 +53,7 @@ fn main() -> Result<()> {
                 worktree: worktree.map(|branch| nebula_core::SpawnWorktree { branch, base }),
                 model,
                 effort,
+                role: None,
             });
             nebula_tui::run_spawn(task.join(" "), kind, child)
         }
