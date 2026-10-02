@@ -536,6 +536,9 @@ async fn handle_client(daemon: Arc<Daemon>, stream: UnixStream) -> Result<()> {
                 } => {
                     reply_done(&out_tx, req_id, daemon.send_to_child(&id, &child, &text)).await;
                 }
+                ClientRequest::ArchiveChild { req_id, id, child } => {
+                    reply_done(&out_tx, req_id, daemon.archive_child(&id, &child)).await;
+                }
                 ClientRequest::Report {
                     req_id,
                     id,

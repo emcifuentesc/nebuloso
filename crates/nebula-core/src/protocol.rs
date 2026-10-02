@@ -8,7 +8,7 @@ use std::path::PathBuf;
 
 /// Bump on any breaking change to these enums. The daemon refuses mismatched
 /// clients; the client then offers a kill-and-restart of the old daemon.
-pub const PROTOCOL_VERSION: u32 = 50;
+pub const PROTOCOL_VERSION: u32 = 51;
 
 /// Max IPC frame size (length prefix sanity bound).
 pub const MAX_FRAME_LEN: u32 = 4 * 1024 * 1024;
@@ -270,6 +270,14 @@ pub enum ClientRequest {
         id: AgentId,
         child: AgentId,
         text: String,
+    },
+    /// `nebula archive <id>`: archive the caller's worker `child`, as the
+    /// TUI's Archive does. Refused while the worker is mid-turn. Answered
+    /// with `Ack`.
+    ArchiveChild {
+        req_id: u64,
+        id: AgentId,
+        child: AgentId,
     },
     /// `nebula report [--pr <url>] <text>`, run by a worker: `text` as its
     /// report to its orchestrator, over any earlier one, and `pr_url` as
