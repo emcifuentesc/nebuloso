@@ -4903,6 +4903,134 @@ async fn archive_waits_for_a_settled_worker_and_drops_it_from_children() {
     wait_for_exit(&mut daemon);
 }
 
+/// A Claude orchestrator's GOAL over the real daemon and binary: its Stops
+/// 1 and 2 (`max_iterations` 2) answer the block decision and Stop 3
+/// passes, empty, exhausting it; a second
+/// orchestrator's `nebula goal done` stops the blocking at once. A session
+/// that is no orchestrator gets the empty Stop body and is refused `done`.
+#[tokio::test]
+async fn a_goal_blocks_an_orchestrators_stops_until_done_or_exhausted() {
+    let env = TestEnv::new();
+    let repo = env.make_repo();
+    env.write_config(r#"{"orchestration": {"goal": {"max_iterations": 2}}}"#);
+    let env_dir = env.tmp.path().join("agent-env");
+    std::fs::create_dir_all(&env_dir).unwrap();
+    let script = env.tmp.path().join("agent.sh");
+    std::fs::write(
+        &script,
+        format!(
+            "#!/bin/sh\nenv | grep '^NEBULA_' > '{0}'/$NEBULA_AGENT_ID.env\nexec cat > /dev/null\n",
+            env_dir.display()
+        ),
+    )
+    .unwrap();
+    make_executable(&script);
+    let mut daemon = env.spawn_daemon_with_agent_cmd(script.to_str().unwrap());
+    let mut c = connect(&env.sock()).await;
+    handshake(&mut c).await;
+    let main_worktree = add_project_get_main_worktree(&mut c, &repo).await;
+    let plain = create_agent_get_id(&mut c, &main_worktree.id, "plain", 2).await;
+    let brain = create_orchestrator_get_id(&mut c, &main_worktree.id, "tests pass", 3).await;
+    let brain_env = read_env_file(&env_dir.join(format!("{}.env", brain.0))).await;
+    let port: u16 = brain_env[env::API_URL]
+        .rsplit(':')
+        .next()
+        .unwrap()
+        .parse()
+        .unwrap();
+    let token = brain_env[env::API_TOKEN].clone();
+    let stop =
+        |id: &nebula_core::AgentId| format!("/api/hooks/claude?agentId={}&hookEvent=Stop", id.0);
+    let block = |n: u32| {
+        format!(
+            "{{\"decision\":\"block\",\"reason\":\"Goal not met: tests pass. Iteration {n}/2. \
+             Continue, or run nebula goal done/unachievable.\"}}"
+        )
+    };
+
+    assert_eq!(
+        hook_post(port, &stop(&plain), &token).await,
+        (200, String::new())
+    );
+    let out = agent_cli(&env, &plain, &["goal", "done", "it", "works"]);
+    assert!(!out.status.success(), "no orchestrator, no goal: {out:?}");
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("no open goal"),
+        "{out:?}"
+    );
+
+    for n in 1..=2 {
+        assert_eq!(
+            hook_post(port, &stop(&brain), &token).await,
+            (200, block(n))
+        );
+    }
+    assert_eq!(
+        hook_post(port, &stop(&brain), &token).await,
+        (200, String::new()),
+        "Stop max + 1 passes"
+    );
+    let out = agent_cli(&env, &brain, &["goal", "done", "late"]);
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("no open goal"),
+        "the goal is exhausted: {out:?}"
+    );
+
+    let second = create_orchestrator_get_id(&mut c, &main_worktree.id, "tests pass", 4).await;
+    assert_eq!(
+        hook_post(port, &stop(&second), &token).await,
+        (200, block(1))
+    );
+    let out = agent_cli(&env, &second, &["goal", "done", "cargo", "test", "green"]);
+    assert!(out.status.success(), "goal done failed: {out:?}");
+    assert!(out.stdout.is_empty(), "goal done prints nothing: {out:?}");
+    assert_eq!(
+        hook_post(port, &stop(&second), &token).await,
+        (200, String::new()),
+        "a done goal stops blocking"
+    );
+
+    write_frame(&mut c, &ClientRequest::Shutdown).await.unwrap();
+    wait_for_exit(&mut daemon);
+}
+
+async fn create_orchestrator_get_id(
+    c: &mut UnixStream,
+    worktree: &nebula_core::WorktreeId,
+    goal: &str,
+    req_id: u64,
+) -> nebula_core::AgentId {
+    write_frame(
+        c,
+        &ClientRequest::CreateAgent {
+            req_id,
+            worktree: worktree.clone(),
+            name: "brain".into(),
+            kind: AgentKind::Claude,
+            custom_harness: None,
+            model: None,
+            effort: None,
+            auto_title: false,
+            cloud_prompt: None,
+            starting_prompt: None,
+            issue_url: None,
+            orchestrator: true,
+            goal: Some(goal.into()),
+        },
+    )
+    .await
+    .unwrap();
+    let events = read_events_until(c, EVENT_TIMEOUT, |evs| find_ack(evs, req_id).is_some()).await;
+    let Some(ServerEvent::Ack {
+        created: Some(EntityId::Agent(id)),
+        ..
+    }) = find_ack(&events, req_id)
+    else {
+        panic!("CreateAgent failed: {events:#?}");
+    };
+    id.clone()
+}
+
 /// `nebula report` and `nebula result` over the real binary: a worker in
 /// its own worktree reports, and its lead's `result` shows that report
 /// fresh beside the file it left untracked in the checkout. The lead
