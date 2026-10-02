@@ -62,6 +62,58 @@ fn truncate_report(text: &str) -> String {
     format!("{}{TRUNCATED}", &text[..cut])
 }
 
+/// What a worker is told at spawn about reporting back: the
+/// `nebula report` rule and, in a worktree nebula cut from `base_ref`, how
+/// to open its PR against that base. Fenced, after the task, so the task
+/// cannot fake its end.
+pub(crate) fn worker_guidance(base_ref: Option<&str>) -> String {
+    let mut text = String::from(
+        "[nebula] You are a worker started by a nebula orchestrator. When your task is finished, \
+         or you are blocked, run `nebula report \"<summary>\"` as the last thing in every turn, \
+         including turns after a follow-up message. Start the summary with `DONE:` or \
+         `BLOCKED:`, list the files changed, and pass `--pr <url>` if you opened a PR.",
+    );
+    if let Some(base) = base_ref {
+        let base = base.strip_prefix("origin/").unwrap_or(base);
+        text.push_str(&format!(
+            " Implementers: commit, `git push -u origin HEAD`, then `gh pr create --fill --base \
+             {base}`. If push or `gh` fails, report `BLOCKED:` with the error's first line."
+        ));
+    }
+    format!("<nebula-worker-guidance>\n{text}\n</nebula-worker-guidance>")
+}
+
+/// `prompts` with a worker's `guidance` folded in: onto the system prompt
+/// where the harness has a flag for one, else after the first prompt of a
+/// cold spawn — a resumed transcript already holds it.
+pub(crate) fn worker_prompts(
+    prompts: crate::pr_scope::LaunchPrompts,
+    system_append: bool,
+    resumed: bool,
+    guidance: Option<&str>,
+) -> crate::pr_scope::LaunchPrompts {
+    let Some(guidance) = guidance else {
+        return prompts;
+    };
+    let join = |head: Option<String>| {
+        Some(match head {
+            Some(head) => format!("{head}\n\n{guidance}"),
+            None => guidance.to_string(),
+        })
+    };
+    match (system_append, resumed) {
+        (true, _) => crate::pr_scope::LaunchPrompts {
+            system: join(prompts.system),
+            ..prompts
+        },
+        (false, true) => prompts,
+        (false, false) => crate::pr_scope::LaunchPrompts {
+            initial: join(prompts.initial),
+            ..prompts
+        },
+    }
+}
+
 /// The first free `agent-N` among `taken` — the same default the TUI's
 /// name prompt offers, which is what makes the new row eligible for
 /// AUTO-TITLE (the daemon titles only rows created on the default name).
