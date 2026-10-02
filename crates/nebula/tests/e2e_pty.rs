@@ -4869,3 +4869,113 @@ async fn a_workers_report_and_checkout_show_in_its_leads_result() {
     write_frame(&mut c, &ClientRequest::Shutdown).await.unwrap();
     wait_for_exit(&mut daemon);
 }
+
+/// `nebula spawn --review` over the real binary: once the implementer's
+/// turn has ended, a reviewer starts in its worktree with purpose review;
+/// a second reviewer while the first is still on its starting prompt is
+/// refused, and so is a plain spawn onto the existing branch.
+#[tokio::test]
+async fn a_reviewer_attaches_to_its_settled_implementers_worktree() {
+    let env = TestEnv::new();
+    let repo = env.make_repo();
+    let env_dir = env.tmp.path().join("agent-env");
+    std::fs::create_dir_all(&env_dir).unwrap();
+    let script = env.tmp.path().join("agent.sh");
+    std::fs::write(
+        &script,
+        format!(
+            "#!/bin/sh\nenv | grep '^NEBULA_' > '{0}'/$NEBULA_AGENT_ID.env\nexec cat > /dev/null\n",
+            env_dir.display()
+        ),
+    )
+    .unwrap();
+    make_executable(&script);
+    let mut daemon = env.spawn_daemon_with_agent_cmd(script.to_str().unwrap());
+    let mut c = connect(&env.sock()).await;
+    handshake(&mut c).await;
+    let main_worktree = add_project_get_main_worktree(&mut c, &repo).await;
+    let lead = create_agent_get_id(&mut c, &main_worktree.id, "lead", 2).await;
+    let lead_env = read_env_file(&env_dir.join(format!("{}.env", lead.0))).await;
+    let port: u16 = lead_env[env::API_URL]
+        .rsplit(':')
+        .next()
+        .unwrap()
+        .parse()
+        .unwrap();
+    let token = lead_env[env::API_TOKEN].clone();
+    let spawned = |out: std::process::Output| {
+        assert!(out.status.success(), "spawn failed: {out:?}");
+        serde_json::from_slice::<serde_json::Value>(&out.stdout).unwrap()
+    };
+
+    let implementer = spawned(agent_cli(
+        &env,
+        &lead,
+        &[
+            "spawn",
+            "--worktree",
+            "feat-r",
+            "--base",
+            "main",
+            "write it",
+        ],
+    ));
+    let implementer_id = implementer["id"].as_str().unwrap().to_string();
+    let hook =
+        |event: &str| format!("/api/hooks/claude?agentId={implementer_id}&hookEvent={event}");
+    for event in ["UserPromptSubmit", "Stop"] {
+        let (status, _) = hook_post(port, &hook(event), &token).await;
+        assert_eq!(status, 200, "{event}");
+    }
+    let out = agent_cli(&env, &lead, &["wait", "--timeout", "10s", &implementer_id]);
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+
+    let reviewer = spawned(agent_cli(
+        &env,
+        &lead,
+        &["spawn", "--worktree", "feat-r", "--review", "review feat-r"],
+    ));
+    assert_eq!(reviewer["worktree"], implementer["worktree"]);
+    assert_eq!(reviewer["branch"], "feat-r");
+    let reviewer_id = reviewer["id"].as_str().unwrap().to_string();
+    let out = agent_cli(&env, &lead, &["status", &reviewer_id, &implementer_id]);
+    assert!(out.status.success(), "status failed: {out:?}");
+    let rows: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(rows[0]["purpose"], "review");
+    assert_eq!(rows[1]["purpose"], "implement");
+
+    let out = agent_cli(
+        &env,
+        &lead,
+        &[
+            "spawn",
+            "--worktree",
+            "feat-r",
+            "--review",
+            "review it again",
+        ],
+    );
+    assert!(
+        !out.status.success(),
+        "a second reviewer must wait: {out:?}"
+    );
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains(&format!(
+            "{reviewer_id} is working in this worktree; wait first"
+        )),
+        "{out:?}"
+    );
+    let out = agent_cli(
+        &env,
+        &lead,
+        &["spawn", "--worktree", "feat-r", "write more"],
+    );
+    assert!(!out.status.success(), "only a reviewer attaches: {out:?}");
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("branch feat-r already exists"),
+        "{out:?}"
+    );
+
+    write_frame(&mut c, &ClientRequest::Shutdown).await.unwrap();
+    wait_for_exit(&mut daemon);
+}
