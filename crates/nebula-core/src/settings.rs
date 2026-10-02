@@ -112,7 +112,7 @@ pub fn parse_lenient<T: DeserializeOwned + Default>(obj: &Object) -> (T, BTreeSe
     for (key, value) in readable {
         kept.insert(key.clone(), value);
         if serde_json::from_value::<T>(Value::Object(kept.clone())).is_err() {
-            kept.remove(&key);
+            kept.shift_remove(&key);
             skipped.insert(key);
         }
     }

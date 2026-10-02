@@ -126,7 +126,7 @@ pub fn export(paths: &Paths, scope: Scope) -> (Value, Vec<String>) {
         if let Some(Value::Object(config)) = bundle.get_mut(CONFIG) {
             let mut stripped = Vec::new();
             for key in EXEC_KEYS {
-                if config.remove(key).is_some() {
+                if config.shift_remove(key).is_some() {
                     stripped.push(key);
                 }
             }

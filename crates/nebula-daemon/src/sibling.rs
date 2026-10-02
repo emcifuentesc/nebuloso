@@ -12,8 +12,7 @@
 use std::sync::Arc;
 
 use anyhow::{bail, Context, Result};
-use nebula_core::orchestration::{roster_order, Orchestration, Role, DEFAULT_ROSTER};
-use nebula_core::paths;
+use nebula_core::orchestration::{Orchestration, Role, DEFAULT_ROSTER};
 use nebula_core::{
     Agent, AgentId, AgentKind, AgentStatus, ChildSpawn, ChildStatus, EntityId, SessionRef,
     SpawnWorktree, WorkerResult, Worktree, WorktreeId,
@@ -260,13 +259,8 @@ impl Daemon {
                 }
             }
         }
-        let order = roster_order(
-            &[&paths::config_path(), &paths::config_local_path()],
-            &project.repo_path,
-        );
         Orchestration::resolve(
             config.orchestration(&project.repo_path).as_ref(),
-            &order,
             &registry,
             &|program| installed.iter().any(|p| p == program),
         )
@@ -1206,7 +1200,6 @@ mod tests {
         }});
         Orchestration::resolve(
             Some(&raw),
-            &[],
             &nebula_core::harness::registry(&Default::default(), &[]),
             &|_| true,
         )
@@ -1285,7 +1278,7 @@ mod tests {
         );
         assert_eq!(
             err(None, role("nope")),
-            "no role nope in the roster (careful, fast, plain, reviewer)"
+            "no role nope in the roster (fast, careful, plain, reviewer)"
         );
     }
 

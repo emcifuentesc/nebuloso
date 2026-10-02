@@ -8,17 +8,17 @@
 //! layer after it replaces whole entries by key, and `null` removes one.
 //! Every other key is replaced, `null` putting back its default. Keys this
 //! build has no reader for are ignored, so a newer nebula's settings never
-//! break an older one.
+//! break an older one. Entries keep the order the files write them in, a
+//! layer's new keys after the keys before them (serde_json's
+//! `preserve_order`, so a settings save or a bundle round trip keeps it too).
 
 use crate::entities::AgentKind;
 use crate::harness::HarnessDescriptor;
-use serde::de::{IgnoredAny, MapAccess, Visitor};
+use serde::de::{MapAccess, Visitor};
 use serde::ser::SerializeMap;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::{Map, Value};
-use std::collections::BTreeMap;
 use std::ops::RangeInclusive;
-use std::path::Path;
 
 pub const DEFAULT_MAX_CHILDREN: usize = 8;
 pub const MAX_CHILDREN_RANGE: RangeInclusive<usize> = 1..=32;
@@ -198,13 +198,11 @@ impl Default for Orchestration {
 
 impl Orchestration {
     /// Parse the layered `orchestration` value (`None` when no layer set
-    /// one). `order` is the roster keys in the order the files wrote them
-    /// ([`roster_order`]); `registry` names the harnesses an entry may run;
-    /// `installed` says whether a program resolves on PATH, which decides
-    /// the default roster.
+    /// one). `registry` names the harnesses an entry may run; `installed`
+    /// says whether a program resolves on PATH, which decides the default
+    /// roster.
     pub fn resolve(
         raw: Option<&Value>,
-        order: &[String],
         registry: &[HarnessDescriptor],
         installed: &dyn Fn(&str) -> bool,
     ) -> Result<Self, String> {
@@ -230,17 +228,13 @@ impl Orchestration {
         };
         let roster = match obj.get("roster") {
             None | Some(Value::Null) => default_roster(registry, installed),
-            Some(Value::Object(entries)) => {
-                let mut roster = entries
+            Some(Value::Object(entries)) => Roster(
+                entries
                     .iter()
                     .filter(|(_, value)| !value.is_null())
                     .map(|(key, value)| Ok((key.clone(), parse_entry(key, value, registry)?)))
-                    .collect::<Result<Vec<_>, String>>()?;
-                roster.sort_by_key(|(key, _)| {
-                    order.iter().position(|k| k == key).unwrap_or(usize::MAX)
-                });
-                Roster(roster)
-            }
+                    .collect::<Result<_, String>>()?,
+            ),
             Some(_) => return Err("orchestration: roster is not an object".into()),
         };
         Ok(Self {
@@ -312,7 +306,7 @@ pub fn overlay(base: &mut Value, over: Value) {
         {
             for (entry, replacement) in entries {
                 if replacement.is_null() {
-                    roster.remove(entry);
+                    roster.shift_remove(entry);
                 } else {
                     roster.insert(entry.clone(), replacement.clone());
                 }
@@ -320,83 +314,10 @@ pub fn overlay(base: &mut Value, over: Value) {
             continue;
         }
         if value.is_null() {
-            base.remove(&key);
+            base.shift_remove(&key);
         } else {
             base.insert(key, value);
         }
-    }
-}
-
-/// The roster keys `files` write, in the order they write them: each
-/// file's top-level roster, then `project`'s, first mention winning. JSON
-/// objects lose their order once parsed, so this reads the text again; a
-/// file that is missing or reads otherwise than expected adds nothing.
-pub fn roster_order(files: &[&Path], project: &Path) -> Vec<String> {
-    let project = project.to_string_lossy();
-    let mut order: Vec<String> = Vec::new();
-    for path in files {
-        let Some(probe) = std::fs::read_to_string(path)
-            .ok()
-            .and_then(|raw| serde_json::from_str::<OrderProbe>(&raw).ok())
-        else {
-            continue;
-        };
-        let project_keys = probe
-            .projects
-            .get(project.as_ref())
-            .map(|p| p.orchestration.roster.0.clone())
-            .unwrap_or_default();
-        for key in probe.orchestration.roster.0.into_iter().chain(project_keys) {
-            if !order.contains(&key) {
-                order.push(key);
-            }
-        }
-    }
-    order
-}
-
-#[derive(Default, Deserialize)]
-#[serde(default)]
-struct OrderProbe {
-    orchestration: OrchestrationOrder,
-    projects: BTreeMap<String, ProjectOrder>,
-}
-
-#[derive(Default, Deserialize)]
-#[serde(default)]
-struct ProjectOrder {
-    orchestration: OrchestrationOrder,
-}
-
-#[derive(Default, Deserialize)]
-#[serde(default)]
-struct OrchestrationOrder {
-    roster: KeyOrder,
-}
-
-#[derive(Default)]
-struct KeyOrder(Vec<String>);
-
-impl<'de> Deserialize<'de> for KeyOrder {
-    fn deserialize<D: Deserializer<'de>>(from: D) -> Result<Self, D::Error> {
-        struct Keys;
-        impl<'de> Visitor<'de> for Keys {
-            type Value = KeyOrder;
-            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-                f.write_str("a map")
-            }
-            fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<KeyOrder, A::Error> {
-                let mut keys = Vec::new();
-                while let Some((key, IgnoredAny)) = map.next_entry::<String, IgnoredAny>()? {
-                    keys.push(key);
-                }
-                Ok(KeyOrder(keys))
-            }
-            fn visit_unit<E>(self) -> Result<KeyOrder, E> {
-                Ok(KeyOrder::default())
-            }
-        }
-        from.deserialize_any(Keys)
     }
 }
 
@@ -404,13 +325,14 @@ impl<'de> Deserialize<'de> for KeyOrder {
 mod tests {
     use super::*;
     use serde_json::json;
+    use std::collections::BTreeMap;
 
     fn registry() -> Vec<HarnessDescriptor> {
         crate::harness::registry(&BTreeMap::new(), &[])
     }
 
     fn resolve(raw: Value) -> Result<Orchestration, String> {
-        Orchestration::resolve(Some(&raw), &[], &registry(), &|_| true)
+        Orchestration::resolve(Some(&raw), &registry(), &|_| true)
     }
 
     fn keys(orchestration: &Orchestration) -> Vec<&str> {
@@ -419,7 +341,7 @@ mod tests {
 
     #[test]
     fn the_default_roster_is_every_installed_hooked_harness_in_order() {
-        let all = Orchestration::resolve(None, &[], &registry(), &|_| true).unwrap();
+        let all = Orchestration::resolve(None, &registry(), &|_| true).unwrap();
         assert_eq!(keys(&all), ["claude", "codex", "cursor", "pi", "opencode"]);
         assert_eq!(all.max_children, DEFAULT_MAX_CHILDREN);
         let claude = all.roster.get("claude").unwrap();
@@ -430,7 +352,7 @@ mod tests {
             (None, None)
         );
 
-        let some = Orchestration::resolve(None, &[], &registry(), &|program| {
+        let some = Orchestration::resolve(None, &registry(), &|program| {
             matches!(program, "cursor-agent" | "pi")
         })
         .unwrap();
@@ -439,7 +361,7 @@ mod tests {
             ["cursor", "pi"],
             "probed by program: cursor's is cursor-agent"
         );
-        assert!(Orchestration::resolve(None, &[], &registry(), &|_| false)
+        assert!(Orchestration::resolve(None, &registry(), &|_| false)
             .unwrap()
             .roster
             .0
@@ -448,18 +370,19 @@ mod tests {
 
     #[test]
     fn a_configured_roster_replaces_the_default_and_keeps_the_written_order() {
-        let order = ["pi", "claude", "codex"].map(String::from);
-        let raw = json!({
+        let raw: Value = serde_json::from_str(
+            r#"{
             "roster": {
-                "claude": { "kind": "claude", "model": "opus", "effort": "high", "unattended": true },
-                "codex": { "kind": "codex" },
                 "pi": { "kind": "pi", "roles": ["review"], "future": 1 },
+                "claude": { "kind": "claude", "model": "opus", "effort": "high", "unattended": true },
+                "codex": { "kind": "codex" }
             },
             "max_children": 3,
-            "cross_review": { "max_rounds": 3 },
-        });
-        let orchestration =
-            Orchestration::resolve(Some(&raw), &order, &registry(), &|_| true).unwrap();
+            "cross_review": { "max_rounds": 3 }
+        }"#,
+        )
+        .unwrap();
+        let orchestration = Orchestration::resolve(Some(&raw), &registry(), &|_| true).unwrap();
         assert_eq!(keys(&orchestration), ["pi", "claude", "codex"]);
         assert_eq!(orchestration.max_children, 3);
         let claude = orchestration.roster.get("claude").unwrap();
@@ -509,7 +432,7 @@ mod tests {
         )]);
         let registry = crate::harness::registry(&overrides, &[]);
         let raw = json!({"roster": {"m": {"kind": "mine"}}});
-        let orchestration = Orchestration::resolve(Some(&raw), &[], &registry, &|_| true).unwrap();
+        let orchestration = Orchestration::resolve(Some(&raw), &registry, &|_| true).unwrap();
         let entry = orchestration.roster.get("m").unwrap();
         assert_eq!(
             (entry.kind, entry.custom_harness.as_deref()),
@@ -558,6 +481,24 @@ mod tests {
             json!({"roster": {"claude": {"kind": "claude"}, "pi": {"kind": "pi"}}}),
             "a replaced entry loses the fields it no longer names"
         );
+
+        let mut ordered: Value = serde_json::from_str(
+            r#"{"roster": {"zeta": {"kind": "pi"}, "codex": {"kind": "codex"}, "alpha": {"kind": "pi"}}}"#,
+        )
+        .unwrap();
+        overlay(
+            &mut ordered,
+            serde_json::from_str(
+                r#"{"roster": {"beta": {"kind": "pi"}, "alpha": {"kind": "claude"}, "codex": null}}"#,
+            )
+            .unwrap(),
+        );
+        assert_eq!(
+            keys(&Orchestration::resolve(Some(&ordered), &registry(), &|_| true).unwrap()),
+            ["zeta", "alpha", "beta"],
+            "a replaced entry keeps its place, a removal shifts the rest up, a new one goes last"
+        );
+
         overlay(&mut base, json!({"roster": null}));
         assert_eq!(base, json!({}), "a null roster puts back the default");
 
@@ -567,35 +508,9 @@ mod tests {
             json!({"roster": {"pi": null, "codex": {"kind": "codex"}}}),
         );
         assert_eq!(
-            keys(&Orchestration::resolve(Some(&absent), &[], &registry(), &|_| true).unwrap()),
+            keys(&Orchestration::resolve(Some(&absent), &registry(), &|_| true).unwrap()),
             ["codex"],
             "a first roster's nulls name nothing"
-        );
-    }
-
-    #[test]
-    fn roster_order_follows_the_files_then_the_project() {
-        let dir = tempfile::tempdir().unwrap();
-        let config = dir.path().join("config.json");
-        let local = dir.path().join("config.local.json");
-        std::fs::write(
-            &config,
-            r#"{"orchestration": {"roster": {"pi": {}, "codex": {}}},
-                "projects": {"/repo": {"orchestration": {"roster": {"zed": {}, "pi": null}}}}}"#,
-        )
-        .unwrap();
-        std::fs::write(
-            &local,
-            r#"{"orchestration": {"roster": {"claude": {}, "codex": null}}}"#,
-        )
-        .unwrap();
-        assert_eq!(
-            roster_order(&[&config, &local], Path::new("/repo")),
-            ["pi", "codex", "zed", "claude"]
-        );
-        assert_eq!(
-            roster_order(&[&dir.path().join("missing.json"), &local], Path::new("/x")),
-            ["claude", "codex"]
         );
     }
 }
