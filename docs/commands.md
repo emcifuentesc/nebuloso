@@ -81,7 +81,8 @@ nebula spawn --worktree <branch> --review [--role <key>] <task>
 nebula roster             # the roster this session's workers start from, resolved for its project,
                           # as one JSON object: {"roster":{"<key>":{"kind","model","effort",
                           # "roles","unattended"},…},"max_children":N,
-                          # "cross_review":{"max_rounds":N}} (3 rounds unless set, 1 to 10),
+                          # "cross_review":{"max_rounds":N},"goal":{"max_iterations":N}}
+                          # (3 rounds unless set, 1 to 10; 10 goal iterations unless set, 1 to 50),
                           # entries in the order the settings list them; a setting that cannot be used is refused, naming
                           # the entry ("roster entry <key>: unknown kind <kind>")
 nebula children           # this session's unarchived workers as one JSON array, oldest first, of

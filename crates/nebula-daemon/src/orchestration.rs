@@ -97,7 +97,7 @@ mod tests {
         let text = orchestrator_guidance(&Orchestration::default());
         assert!(text.starts_with("<nebula-orchestrator-guidance>\n[nebula] You are"));
         assert!(text.ends_with(
-            "\n\nRoster:\n{\"roster\":{},\"max_children\":8,\"cross_review\":{\"max_rounds\":3}}\n\
+            "\n\nRoster:\n{\"roster\":{},\"max_children\":8,\"cross_review\":{\"max_rounds\":3},\"goal\":{\"max_iterations\":10}}\n\
              </nebula-orchestrator-guidance>"
         ));
     }

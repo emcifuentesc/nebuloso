@@ -4149,7 +4149,7 @@ mod tests {
             assert_eq!(brain[1], format!("{}\n\n{guidance}", plain[1]), "{kind:?}");
             assert!(brain[1].contains(crate::orchestration::ORCHESTRATOR_GUIDANCE));
             assert!(brain[1].contains(
-                "Roster:\n{\"roster\":{},\"max_children\":8,\"cross_review\":{\"max_rounds\":3}}"
+                "Roster:\n{\"roster\":{},\"max_children\":8,\"cross_review\":{\"max_rounds\":3},\"goal\":{\"max_iterations\":10}}"
             ));
             assert_eq!(brain.last().unwrap(), "fix the parser");
         }

@@ -4496,7 +4496,7 @@ async fn roster_prints_the_configured_roster_and_spawn_role_uses_it() {
                 "alpha": {"kind": "pi", "roles": ["review"]}
             },
             "max_children": 3,
-            "goal": {"max_iterations": 10}
+            "goal": {"max_iterations": 4}
         }}"#,
     );
     let mut daemon = env.spawn_daemon_with_agent_cmd("/bin/cat");
@@ -4540,7 +4540,7 @@ async fn roster_prints_the_configured_roster_and_spawn_role_uses_it() {
             r#"{"roster":{"zeta":{"kind":"claude","model":"opus","effort":"high","#,
             r#""roles":["implement","review"],"unattended":true},"#,
             r#""alpha":{"kind":"pi","model":null,"effort":null,"roles":["review"],"#,
-            r#""unattended":false}},"max_children":3,"cross_review":{"max_rounds":3}}"#,
+            r#""unattended":false}},"max_children":3,"cross_review":{"max_rounds":3},"goal":{"max_iterations":4}}"#,
             "\n"
         )
     );

@@ -1,6 +1,7 @@
 //! The `orchestration` settings key: the ROSTER of harnesses a lead may
 //! start as workers (`nebula spawn --role <key>`), how many it may run at
-//! once, and how many review rounds an orchestrator's cross-review takes.
+//! once, how many review rounds an orchestrator's cross-review takes, and
+//! how many Stops an orchestrator's GOAL sends back to work.
 //!
 //! The key layers like no other setting. The first layer to set a `roster`
 //! — `config.json`, then `config.local.json`, then the project's
@@ -24,6 +25,14 @@ pub const DEFAULT_MAX_CHILDREN: usize = 8;
 pub const MAX_CHILDREN_RANGE: RangeInclusive<usize> = 1..=32;
 pub const DEFAULT_MAX_ROUNDS: usize = 3;
 pub const MAX_ROUNDS_RANGE: RangeInclusive<usize> = 1..=10;
+pub const DEFAULT_MAX_ITERATIONS: usize = 10;
+pub const MAX_ITERATIONS_RANGE: RangeInclusive<usize> = 1..=50;
+/// Bytes a goal's condition may take.
+pub const MAX_GOAL_LEN: usize = 2 * 1024;
+/// Bytes of `nebula goal done` / `unachievable` text.
+pub const MAX_EVIDENCE_LEN: usize = 8 * 1024;
+/// Why `done` / `unachievable` is refused for a goal that is not open.
+pub const NO_OPEN_GOAL: &str = "no open goal";
 
 /// The harnesses the default roster offers, in its order, each only when
 /// its CLI is installed. Muse and Grok have no hooks, so a lead could never
@@ -57,6 +66,97 @@ impl Role {
         match self {
             Role::Implement => "implement",
             Role::Review => "review",
+        }
+    }
+}
+
+/// Where an orchestrator's GOAL stands. Only `Open` holds Claude's Stop.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum GoalState {
+    Open,
+    Done,
+    Unachievable,
+    Exhausted,
+    Cleared,
+}
+
+/// What moves a goal: the orchestrator's verdict, the Stop that finds the
+/// iterations spent, or a clear from the user or the orchestrator.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GoalEvent {
+    Done,
+    Unachievable,
+    BlockAtLimit,
+    Clear,
+}
+
+impl GoalState {
+    pub const ALL: [GoalState; 5] = [
+        GoalState::Open,
+        GoalState::Done,
+        GoalState::Unachievable,
+        GoalState::Exhausted,
+        GoalState::Cleared,
+    ];
+
+    pub fn parse(s: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|state| state.as_str() == s)
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            GoalState::Open => "open",
+            GoalState::Done => "done",
+            GoalState::Unachievable => "unachievable",
+            GoalState::Exhausted => "exhausted",
+            GoalState::Cleared => "cleared",
+        }
+    }
+
+    pub fn next(self, event: GoalEvent) -> Result<GoalState, &'static str> {
+        match (self, event) {
+            (_, GoalEvent::Clear) => Ok(GoalState::Cleared),
+            (GoalState::Open, GoalEvent::Done) => Ok(GoalState::Done),
+            (GoalState::Open, GoalEvent::Unachievable) => Ok(GoalState::Unachievable),
+            (GoalState::Open, GoalEvent::BlockAtLimit) => Ok(GoalState::Exhausted),
+            _ => Err(NO_OPEN_GOAL),
+        }
+    }
+}
+
+/// An orchestrator's GOAL: the condition it keeps working toward, and how
+/// many of its Stops have been sent back to work so far.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Goal {
+    pub condition: String,
+    pub state: GoalState,
+    pub iterations: u32,
+    /// `goal.max_iterations` when the goal was set.
+    pub max_iterations: u32,
+    /// The orchestrator's `nebula goal done` / `unachievable` text.
+    pub evidence: Option<String>,
+}
+
+/// What a Claude Stop does to a goal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StopVerdict {
+    /// The turn ends as it would with no goal.
+    Pass,
+    /// Sent back to work, as block number `iteration`.
+    Block { iteration: u32 },
+    /// The iterations are spent: the turn ends and the goal is exhausted.
+    Exhaust,
+}
+
+impl Goal {
+    pub fn on_stop(&self) -> StopVerdict {
+        match self.state {
+            GoalState::Open if self.iterations < self.max_iterations => StopVerdict::Block {
+                iteration: self.iterations + 1,
+            },
+            GoalState::Open => StopVerdict::Exhaust,
+            _ => StopVerdict::Pass,
         }
     }
 }
@@ -197,6 +297,8 @@ pub struct Orchestration {
     pub max_children: usize,
     #[serde(default)]
     pub cross_review: CrossReview,
+    #[serde(default)]
+    pub goal: GoalSettings,
 }
 
 impl Default for Orchestration {
@@ -205,6 +307,7 @@ impl Default for Orchestration {
             roster: Roster::default(),
             max_children: DEFAULT_MAX_CHILDREN,
             cross_review: CrossReview::default(),
+            goal: GoalSettings::default(),
         }
     }
 }
@@ -220,6 +323,21 @@ impl Default for CrossReview {
     fn default() -> Self {
         Self {
             max_rounds: DEFAULT_MAX_ROUNDS,
+        }
+    }
+}
+
+/// How long an orchestrator's GOAL holds its Stops.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GoalSettings {
+    /// Stops sent back to work before the goal is exhausted.
+    pub max_iterations: usize,
+}
+
+impl Default for GoalSettings {
+    fn default() -> Self {
+        Self {
+            max_iterations: DEFAULT_MAX_ITERATIONS,
         }
     }
 }
@@ -256,6 +374,16 @@ impl Orchestration {
             )?,
             Some(_) => return Err("orchestration: cross_review is not an object".into()),
         };
+        let max_iterations = match obj.get("goal") {
+            None | Some(Value::Null) => DEFAULT_MAX_ITERATIONS,
+            Some(Value::Object(goal)) => bounded(
+                goal,
+                "goal.max_iterations",
+                DEFAULT_MAX_ITERATIONS,
+                MAX_ITERATIONS_RANGE,
+            )?,
+            Some(_) => return Err("orchestration: goal is not an object".into()),
+        };
         let roster = match obj.get("roster") {
             None | Some(Value::Null) => default_roster(registry, installed),
             Some(Value::Object(entries)) => Roster(
@@ -271,6 +399,7 @@ impl Orchestration {
             roster,
             max_children,
             cross_review: CrossReview { max_rounds },
+            goal: GoalSettings { max_iterations },
         })
     }
 }
@@ -506,6 +635,90 @@ mod tests {
     }
 
     #[test]
+    fn goal_iterations_default_to_ten_within_one_to_fifty() {
+        let iterations = |raw: Value| resolve(raw).map(|o| o.goal.max_iterations);
+        assert_eq!(iterations(json!({})), Ok(DEFAULT_MAX_ITERATIONS));
+        assert_eq!(iterations(json!({"goal": null})), Ok(10));
+        assert_eq!(iterations(json!({"goal": {"max_iterations": 50}})), Ok(50));
+        for bad in [0, 51] {
+            assert_eq!(
+                iterations(json!({"goal": {"max_iterations": bad}})),
+                Err(format!(
+                    "orchestration: goal.max_iterations must be 1 to 50 (got {bad})"
+                ))
+            );
+        }
+        assert_eq!(
+            iterations(json!({"goal": 2})),
+            Err("orchestration: goal is not an object".into())
+        );
+    }
+
+    #[test]
+    fn goal_transitions() {
+        use GoalEvent as E;
+        use GoalState as S;
+        let table = [
+            (S::Open, E::Done, Ok(S::Done)),
+            (S::Open, E::Unachievable, Ok(S::Unachievable)),
+            (S::Open, E::BlockAtLimit, Ok(S::Exhausted)),
+            (S::Open, E::Clear, Ok(S::Cleared)),
+            (S::Done, E::Clear, Ok(S::Cleared)),
+            (S::Unachievable, E::Clear, Ok(S::Cleared)),
+            (S::Exhausted, E::Clear, Ok(S::Cleared)),
+            (S::Cleared, E::Clear, Ok(S::Cleared)),
+        ];
+        for (from, event, to) in table {
+            assert_eq!(from.next(event), to, "{from:?} --{event:?}-->");
+        }
+        for from in [S::Done, S::Unachievable, S::Exhausted, S::Cleared] {
+            for event in [E::Done, E::Unachievable, E::BlockAtLimit] {
+                assert_eq!(
+                    from.next(event),
+                    Err(NO_OPEN_GOAL),
+                    "{from:?} --{event:?}-->"
+                );
+            }
+        }
+        for state in S::ALL {
+            assert_eq!(S::parse(state.as_str()), Some(state));
+            assert_eq!(
+                serde_json::to_value(state).unwrap(),
+                json!(state.as_str()),
+                "the column and the wire spell it alike"
+            );
+        }
+    }
+
+    #[test]
+    fn stops_one_to_max_block_and_the_next_exhausts() {
+        let goal = |state, iterations| Goal {
+            condition: "tests pass".into(),
+            state,
+            iterations,
+            max_iterations: 2,
+            evidence: None,
+        };
+        assert_eq!(
+            goal(GoalState::Open, 0).on_stop(),
+            StopVerdict::Block { iteration: 1 }
+        );
+        assert_eq!(
+            goal(GoalState::Open, 1).on_stop(),
+            StopVerdict::Block { iteration: 2 }
+        );
+        assert_eq!(goal(GoalState::Open, 2).on_stop(), StopVerdict::Exhaust);
+        for state in [
+            GoalState::Done,
+            GoalState::Unachievable,
+            GoalState::Exhausted,
+            GoalState::Cleared,
+        ] {
+            assert_eq!(goal(state, 0).on_stop(), StopVerdict::Pass, "{state:?}");
+        }
+    }
+
+    #[test]
     fn a_custom_harness_in_the_registry_can_be_an_entry() {
         let overrides = BTreeMap::from([(
             "mine".to_string(),
@@ -523,7 +736,7 @@ mod tests {
             serde_json::to_value(&orchestration).unwrap(),
             json!({"roster": {"m": {"kind": "mine", "model": null, "effort": null,
                 "roles": ["implement", "review"], "unattended": false}}, "max_children": 8,
-                "cross_review": {"max_rounds": 3}})
+                "cross_review": {"max_rounds": 3}, "goal": {"max_iterations": 10}})
         );
     }
 

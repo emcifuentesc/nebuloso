@@ -291,7 +291,7 @@ pub(crate) enum Command {
     ///
     /// Run from inside a nebula agent session. Prints one JSON object,
     /// {"roster":{"<key>":{"kind","model","effort","roles","unattended"},…},
-    /// "max_children":N,"cross_review":{"max_rounds":N}}, resolved for this session's project from the
+    /// "max_children":N,"cross_review":{"max_rounds":N},"goal":{"max_iterations":N}}, resolved for this session's project from the
     /// `orchestration` setting, entries in the order the settings list them.
     /// Without a configured roster it lists every installed hooked harness.
     /// A setting that cannot be used is refused with the entry it names.
