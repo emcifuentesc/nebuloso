@@ -2635,6 +2635,7 @@ impl Daemon {
                 prompts.initial.as_deref(),
                 prompts.system.as_deref(),
                 true,
+                agent.parent_agent_id.is_some(),
                 agent.unattended,
             ),
         };
@@ -3124,6 +3125,7 @@ fn agent_spawn_command(
         None,
         true,
         false,
+        false,
     )
 }
 
@@ -3232,6 +3234,7 @@ fn agent_spawn_command_with(
     initial_prompt: Option<&str>,
     additional_system_prompt: Option<&str>,
     guidance: bool,
+    worker: bool,
     unattended: bool,
 ) -> (String, Vec<String>, bool) {
     if let Some(cmd) = cmd_override {
@@ -3261,6 +3264,9 @@ fn agent_spawn_command_with(
     };
     if let Some(flag) = harness.permissions_flag.as_deref() {
         args.push(flag.to_string());
+    }
+    if worker {
+        args.extend(harness.worker_args.iter().cloned());
     }
     if unattended {
         args.extend(harness.unattended_args.iter().cloned());
@@ -3419,6 +3425,7 @@ fn claude_cloud_spawn_command(
         cmd_override,
         None,
         None,
+        false,
         false,
         false,
     );
@@ -4004,6 +4011,7 @@ mod tests {
             None,
             true,
             false,
+            false,
         );
         assert_eq!(program, "agy");
         assert_eq!(args, vec!["--model", "big-1", "do it"]);
@@ -4026,6 +4034,7 @@ mod tests {
             None,
             true,
             false,
+            false,
         );
         assert_eq!(args, vec!["-m", "flash"]);
     }
@@ -4043,6 +4052,7 @@ mod tests {
             prompts.initial.as_deref(),
             prompts.system.as_deref(),
             true,
+            false,
             false,
         )
         .1
@@ -4067,6 +4077,7 @@ mod tests {
                 prompts.initial.as_deref(),
                 prompts.system.as_deref(),
                 true,
+                false,
                 unattended,
             )
             .1
@@ -4097,6 +4108,42 @@ mod tests {
         }
     }
 
+    /// A worker's argv carries its harness's `worker_args` ahead of the
+    /// prompts, fresh and resumed, so Codex's update check never holds a
+    /// worker no one is watching; an ordinary session never does.
+    #[test]
+    fn worker_args_ride_only_a_worker_spawn() {
+        let all = test_registry();
+        let harness = test_harness(&all, AgentKind::Codex);
+        let argv = |session: Option<&str>, worker: bool| {
+            let prompts = spawn_prompts(&harness, session.is_some(), None, Some("go"), None);
+            agent_spawn_command_with(
+                &harness,
+                session,
+                Some(Path::new(TEST_CWD)),
+                None,
+                None,
+                None,
+                prompts.initial.as_deref(),
+                prompts.system.as_deref(),
+                true,
+                worker,
+                false,
+            )
+            .1
+        };
+        let pair = ["-c", "check_for_update_on_startup=false"].map(String::from);
+        for session in [None, Some("sid-1")] {
+            let args = argv(session, true);
+            let at = args
+                .windows(2)
+                .position(|w| w == pair)
+                .unwrap_or_else(|| panic!("{args:?}"));
+            assert!(at < args.len() - 2, "before the trailing prompt: {args:?}");
+            assert!(!argv(session, false).contains(&pair[1]), "{session:?}");
+        }
+    }
+
     /// A worker's guidance rides the system-prompt flag where the harness
     /// maps one, and trails the task otherwise; an ordinary session's argv
     /// is what it was before workers existed.
@@ -4119,6 +4166,7 @@ mod tests {
                     Some("fix the parser"),
                     None,
                     true,
+                    false,
                     false,
                 )
                 .1;
@@ -4240,6 +4288,7 @@ mod tests {
             None,
             true,
             false,
+            false,
         );
         assert_eq!(program, "agy");
         assert_eq!(
@@ -4286,6 +4335,7 @@ mod tests {
             None,
             true,
             false,
+            false,
         );
         assert_eq!(program, "grok");
         assert!(!resumed);
@@ -4309,6 +4359,7 @@ mod tests {
             None,
             None,
             None,
+            false,
             false,
             false,
         );
@@ -4371,7 +4422,9 @@ mod tests {
     fn grok_spawn_uses_verified_flags_and_preserves_prompt_boundaries() {
         let grok = nebula_core::harness::builtin("grok").unwrap();
         assert_eq!(
-            agent_spawn_command_with(&grok, None, None, None, None, None, None, None, false, false),
+            agent_spawn_command_with(
+                &grok, None, None, None, None, None, None, None, false, false, false
+            ),
             ("grok".into(), vec![], false)
         );
         let (program, args, resumed) = agent_spawn_command_with(
@@ -4383,6 +4436,7 @@ mod tests {
             None,
             Some("fix the bug; keep this as one argument"),
             Some("Review only PR #42"),
+            false,
             false,
             false,
         );
@@ -4425,6 +4479,7 @@ mod tests {
             None,
             true,
             false,
+            false,
         );
         assert!(resumed);
         let mut expected = guided(
@@ -4446,6 +4501,7 @@ mod tests {
                 None,
                 true,
                 false,
+                false,
             )
             .1,
             vec!["resume", "sid", "--cd", TEST_CWD, "--yolo", "carry on"]
@@ -4461,6 +4517,7 @@ mod tests {
                 Some("carry on"),
                 None,
                 true,
+                false,
                 false,
             )
             .1,
@@ -4485,6 +4542,7 @@ mod tests {
                 None,
                 true,
                 false,
+                false,
             )
             .1,
             expected
@@ -4500,6 +4558,7 @@ mod tests {
                 Some("fix auth"),
                 None,
                 true,
+                false,
                 false,
             )
             .1,
@@ -4524,6 +4583,7 @@ mod tests {
                 None,
                 true,
                 false,
+                false,
             )
             .1,
             vec!["--force", "fix auth"]
@@ -4544,6 +4604,7 @@ mod tests {
                 None,
                 true,
                 false,
+                false,
             )
             .1,
             expected
@@ -4560,6 +4621,7 @@ mod tests {
                 Some("carry on"),
                 None,
                 true,
+                false,
                 false,
             ),
             ("/bin/sh".into(), vec!["-i".to_string()], false)
@@ -4585,6 +4647,7 @@ mod tests {
             None,
             true,
             false,
+            false,
         );
         assert_eq!(program, "opencode");
         assert_eq!(
@@ -4605,6 +4668,7 @@ mod tests {
             None,
             Some("Fix auth"),
             None,
+            false,
             false,
             false,
         );
@@ -4659,6 +4723,7 @@ mod tests {
             None,
             true,
             false,
+            false,
         );
         assert_eq!(program, "codex");
         assert!(resumed);
@@ -4696,6 +4761,7 @@ mod tests {
             None,
             Some(&pr_prompt),
             true,
+            false,
             false,
         );
         assert!(resumed);

@@ -178,6 +178,12 @@ pub struct HarnessDescriptor {
     /// has none.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub unattended_args: Vec<String>,
+    /// Argv tokens every worker launches with, whatever its roster entry:
+    /// a worker has no one at its keyboard, so these switch off startup
+    /// prompts that would otherwise hold it (Codex's update check). Empty =
+    /// the harness needs none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub worker_args: Vec<String>,
     /// Flag carrying the first prompt (`--prompt`) where the CLI's
     /// positional is not a prompt (OpenCode's is the project path). None =
     /// the prompt rides trailing, like every other CLI's positional.
@@ -381,6 +387,7 @@ pub fn builtin(id: &str) -> Option<HarnessDescriptor> {
         effort: EffortSpec::default(),
         permissions_flag: None,
         unattended_args: Vec::new(),
+        worker_args: Vec::new(),
         prompt_flag: None,
         resume: ResumeSpec::default(),
         system: SystemSpec::default(),
@@ -442,6 +449,7 @@ pub fn builtin(id: &str) -> Option<HarnessDescriptor> {
                 ..EffortSpec::default()
             },
             permissions_flag: Some("--yolo".into()),
+            worker_args: vec!["-c".into(), "check_for_update_on_startup=false".into()],
             resume: ResumeSpec {
                 flag: None,
                 subcommand: Some("resume".into()),
@@ -676,6 +684,8 @@ pub struct HarnessOverride {
     pub permissions_flag: Clearable<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub unattended_args: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worker_args: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "Clearable::is_keep")]
     pub prompt_flag: Clearable<String>,
     #[serde(default, skip_serializing_if = "Clearable::is_keep")]
@@ -736,6 +746,9 @@ impl HarnessDescriptor {
         over.permissions_flag.apply_to(&mut self.permissions_flag);
         if let Some(args) = over.unattended_args.clone() {
             self.unattended_args = args;
+        }
+        if let Some(args) = over.worker_args.clone() {
+            self.worker_args = args;
         }
         over.prompt_flag.apply_to(&mut self.prompt_flag);
         over.resume_flag.apply_to(&mut self.resume.flag);
@@ -832,6 +845,7 @@ impl CustomHarness {
             effort: EffortSpec::default(),
             permissions_flag: None,
             unattended_args: Vec::new(),
+            worker_args: Vec::new(),
             prompt_flag: None,
             resume: ResumeSpec::default(),
             system: SystemSpec::default(),
@@ -913,6 +927,7 @@ pub fn registry(
             effort: EffortSpec::default(),
             permissions_flag: None,
             unattended_args: Vec::new(),
+            worker_args: Vec::new(),
             prompt_flag: None,
             resume: ResumeSpec::default(),
             system: SystemSpec::default(),
@@ -1094,6 +1109,20 @@ mod tests {
             claude.unattended_args.is_empty(),
             "an empty list clears them"
         );
+    }
+
+    #[test]
+    fn worker_args_are_codexs_alone_and_an_override_replaces_them() {
+        assert_eq!(
+            builtin("codex").unwrap().worker_args,
+            ["-c", "check_for_update_on_startup=false"]
+        );
+        for other in builtins().into_iter().filter(|h| h.id != "codex") {
+            assert!(other.worker_args.is_empty(), "{}", other.id);
+        }
+        let mut codex = builtin("codex").unwrap();
+        codex.apply(&serde_json::from_value(serde_json::json!({"worker_args": []})).unwrap());
+        assert!(codex.worker_args.is_empty(), "an empty list clears them");
     }
 
     #[test]
