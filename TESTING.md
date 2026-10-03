@@ -16,9 +16,14 @@ You need:
 
 ```sh
 cd ~/github/nebula            # any checkout of nebuloso
-git switch main && git pull
+git switch main && git pull origin main
 cargo build --release
+./target/release/nebula roster
 ```
+
+The last command must **not** print `roster does not exist`. That message means you built upstream nebula, which has no orchestration. A protocol-mismatch or "not inside a nebula agent session" error is fine; it just proves the command exists. The version number can't tell the two apart, because both report `0.42.0`.
+
+`git pull origin main` names the fork on purpose. If you renamed `origin` to `upstream` when forking, git repointed `main` to track `upstream/main`, so a bare `git pull` builds upstream. `git branch -u origin/main main` fixes the tracking for good.
 
 ## 2. Open a sandbox shell
 
