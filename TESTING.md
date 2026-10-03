@@ -65,13 +65,45 @@ Save this as `$NEBULA_DATA_DIR/config.json`:
 
 `unattended: true` launches Claude workers with `--permission-mode auto` so they don't stall on approval prompts. Codex already bypasses approvals.
 
+### Optional: pick the orchestrator's model with a preset
+
+The roster only lists workers. "New orchestrator…" starts Claude on its default model, so to run the orchestrator on a specific model, save an agent preset with `orchestrator: true`. The sandbox reads presets from its own data dir, not from your normal nebula, so write it from the sandbox shell:
+
+```sh
+cat > "$NEBULA_DATA_DIR/agent_presets.json" <<'EOF'
+[
+  { "name": "orchestrator (opus)", "kind": "claude", "model": "claude-opus-5-5", "orchestrator": true }
+]
+EOF
+```
+
+The preset editor shows the model but has no field for `orchestrator` yet, so this file is written by hand. nebula re-reads it whenever the preset list opens, so no restart is needed.
+
+To fix the roles too, with Sonnet implementing and Codex as the reviewer, give each roster entry a single role:
+
+```json
+"roster": {
+  "sonnet": { "kind": "claude", "model": "claude-sonnet-5-5", "roles": ["implement"], "unattended": true },
+  "codex":  { "kind": "codex", "roles": ["review"] }
+}
+```
+
 ## 5. Run it
 
 ```sh
 nebula .        # adds the sandbox repo and opens the TUI on the sandbox daemon
 ```
 
-In the TUI, open **New orchestrator…** from the checkout context menu (on the empty band, or with Sessions focused). Pick **claude** and leave the goal empty. Then prompt:
+In the TUI, open **New orchestrator…** from the checkout context menu (on the empty band, or with Sessions focused). Pick **claude** and leave the goal empty.
+
+With the preset from step 4, launch it instead in either of two ways:
+
+- Press `e` on a card, type `orch`, press `Enter`, then type the task.
+- Press `p`, type the task, press `Shift+Tab` to pick the preset, then press `Enter`.
+
+Presets don't ask for a goal, so use "New orchestrator…" for goal mode.
+
+Then prompt:
 
 > Fix the bug in calc.py so test_calc.py passes. Implement with codex, review with claude.
 
