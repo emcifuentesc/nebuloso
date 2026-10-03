@@ -153,6 +153,7 @@ mod tests {
             unattended: false,
             purpose: None,
             orchestrator: parent.is_none(),
+            goal: None,
         }
     }
 
